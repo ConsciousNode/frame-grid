@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Frame Grid v2.0 — ConsciousNode SoftWorks</title>
+<!--
+  Frame Grid v2.0
+  ConsciousNode SoftWorks
+
+  Contact-sheet composite generator + ElasticTOK frame fingerprinting.
+  Camera or uploaded video → sampled frames → ROSA-fingerprinted labeled
+  grid → downloadable PNG + JSON manifest.
+
+  v2.0 — Kehai Interim
+    Xinu compliance: Google Fonts import removed. System monospace stack.
+    Viewport: user-scalable restored.
+    ElasticTOK: SuffixAutomaton + ROSA fingerprint per frame.
+      16×16 patch grid, RGB mean quantization → 768 tokens.
+      ROSA CR + state count computed per frame.
+      CR displayed in frame label bar.
+      JSON manifest export per grid (FPSS-compatible fingerprints).
+    Frame deduplication: MAD threshold comparison vs previous kept frame.
+      Configurable threshold slider (0–20, default 8).
+      Mode toggle: skip duplicates OR mark duplicates (dimmed label).
+    Memory: single reusable scratch canvas. No per-frame canvas alloc.
+    Dedup stats added to Session panel.
+
+  v1.3 — Ed Interim
+    Fix: mobile Chrome WebM blob duration=Infinity resolution.
+    resolveDuration() force-seeks to end, waits for durationchange.
+
+  v1.0–1.2 — Kham / Ed Interim
+    Initial implementation.
+    Proof of concept for the ManosNowAware visual pipeline.
+-->
+<style>
+:root {
+  --bg-0: #060809;
+  --bg-1: #0c1014;
+  --bg-2: #121820;
+  --bg-3: #1a2230;
+  --border: #1e2d3d;
+  --bhi: #2a3f55;
+  --accent: #00e5ff;
+  --accent-dim: rgba(0,229,255,0.12);
+  --accent-glow: rgba(0,229,255,0.25);
+  --warn: #f59e0b;
+  --ok: #34d399;
+  --dup: #f87171;
+  --text: #d4dde8;
+  --tdim: #4a6070;
+  --font-mono: ui-monospace, 'Cascadia Code', 'Fira Mono', 'Consolas', 'Courier New', monospace;
+  --font-ui: system-ui, -apple-system, 'Segoe UI', Helvetica, sans-serif;
+  --r: 6px;
+  --t: 0.15s ease;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg-0); color: var(--text); font-family: var(--font-ui); font-size: 14px; overflow-x: hidden; }
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* ── Layout ── */
+#app { display: flex; flex-direction: column; min-height: 100vh; }
+
+header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 24px; height: 52px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 20;
+}
+.logo { font-family: var(--font-mono); font-size: 13px; font-weight: 700; color: var(--accent); letter-spacing: 2px; text-shadow: 0 0 16px var(--accent-glow); }
+.logo-sub { font-family: var(--font-mono); font-size: 10px; color: var(--tdim); letter-spacing: 1px; }
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.chip { font-family: var(--font-mono); font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 3px; border: 1px solid var(--border); background: var(--bg-2); color: var(--tdim); letter-spacing: 1px; }
+.chip.live { border-color: var(--ok); color: var(--ok); background: rgba(52,211,153,0.08); }
+.chip.live::before { content: '● '; }
+.chip.etok { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); font-size: 9px; }
+
+main { flex: 1; display: grid; grid-template-columns: 320px 1fr; gap: 0; }
+
+/* ── Sidebar ── */
+aside { background: var(--bg-1); border-right: 1px solid var(--border); display: flex; flex-direction: column; height: calc(100vh - 52px); position: sticky; top: 52px; overflow-y: auto; }
+
+.panel { border-bottom: 1px solid var(--border); padding: 20px; }
+.panel-title { font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: var(--tdim); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 16px; }
+
+/* ── Source buttons ── */
+.source-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.src-btn { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 8px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r); cursor: pointer; font-family: var(--font-mono); font-size: 10px; color: var(--tdim); letter-spacing: 1px; text-transform: uppercase; transition: all var(--t); }
+.src-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.src-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); box-shadow: 0 0 12px var(--accent-glow); }
+.src-icon { font-size: 20px; line-height: 1; }
+
+/* ── Controls ── */
+.ctrl-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.ctrl-label { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 10px; color: var(--tdim); letter-spacing: 1px; }
+.ctrl-val { color: var(--accent); }
+
+input[type=range] { width: 100%; height: 3px; -webkit-appearance: none; appearance: none; background: var(--bg-3); border-radius: 2px; outline: none; cursor: pointer; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); cursor: pointer; }
+
+select { width: 100%; padding: 8px 10px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r); color: var(--text); font-family: var(--font-mono); font-size: 11px; outline: none; cursor: pointer; transition: border-color var(--t); }
+select:focus { border-color: var(--accent); }
+
+/* ── Toggle row ── */
+.toggle-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.toggle-label { font-family: var(--font-mono); font-size: 10px; color: var(--tdim); letter-spacing: 1px; }
+.toggle-label span { color: var(--accent); }
+.toggle { position: relative; width: 32px; height: 18px; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-track { position: absolute; inset: 0; background: var(--bg-3); border: 1px solid var(--border); border-radius: 9px; cursor: pointer; transition: background var(--t), border-color var(--t); }
+.toggle input:checked + .toggle-track { background: var(--accent-dim); border-color: var(--accent); }
+.toggle-track::after { content: ''; position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--tdim); top: 2px; left: 2px; transition: transform var(--t), background var(--t); }
+.toggle input:checked + .toggle-track::after { transform: translateX(14px); background: var(--accent); }
+
+/* ── Action button ── */
+.action-btn { width: 100%; padding: 12px; background: var(--accent-dim); border: 1px solid var(--accent); border-radius: var(--r); color: var(--accent); font-family: var(--font-mono); font-size: 12px; font-weight: 700; letter-spacing: 2px; cursor: pointer; transition: all var(--t); text-transform: uppercase; }
+.action-btn:hover:not(:disabled) { background: rgba(0,229,255,0.2); box-shadow: 0 0 16px var(--accent-glow); }
+.action-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.action-btn.secondary { background: var(--bg-2); border-color: var(--border); color: var(--text); margin-top: 8px; }
+.action-btn.secondary:hover:not(:disabled) { border-color: var(--bhi); background: var(--bg-3); box-shadow: none; }
+
+/* ── Stats ── */
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.stat-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.stat { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r); padding: 10px; }
+.stat-n { font-family: var(--font-mono); font-size: 18px; font-weight: 700; color: var(--accent); line-height: 1; }
+.stat-n.warn { color: var(--dup); }
+.stat-l { font-family: var(--font-mono); font-size: 9px; color: var(--tdim); letter-spacing: 1px; margin-top: 4px; text-transform: uppercase; }
+
+/* ── Log ── */
+.log { flex: 1; overflow-y: auto; padding: 12px 16px; font-family: var(--font-mono); font-size: 10px; line-height: 1.8; display: flex; flex-direction: column; gap: 2px; }
+.log-entry { display: flex; gap: 8px; }
+.log-ts { color: var(--tdim); white-space: nowrap; }
+.log-ok { color: var(--ok); }
+.log-warn { color: var(--warn); }
+.log-info { color: var(--accent); }
+.log-dim { color: var(--tdim); }
+.log-etok { color: #a78bfa; }
+
+/* ── Content area ── */
+.content { padding: 24px; display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+
+/* ── Preview ── */
+.preview-wrap { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; position: relative; }
+.preview-label { position: absolute; top: 10px; left: 10px; z-index: 5; font-family: var(--font-mono); font-size: 9px; font-weight: 700; padding: 3px 8px; border-radius: 3px; background: rgba(6,8,9,0.85); border: 1px solid var(--border); color: var(--tdim); letter-spacing: 1px; }
+video, canvas { display: block; width: 100%; max-height: 240px; object-fit: contain; background: #000; }
+#preview-video { display: none; }
+#camera-video { display: none; }
+
+/* ── Grid output ── */
+.grids-section { display: flex; flex-direction: column; gap: 16px; }
+.grid-card { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+.grid-card-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 10px; color: var(--tdim); letter-spacing: 1px; gap: 8px; flex-wrap: wrap; }
+.grid-card-header span { color: var(--accent); }
+.grid-card-actions { display: flex; gap: 6px; margin-left: auto; }
+.grid-canvas { display: block; width: 100%; image-rendering: pixelated; }
+.dl-btn { font-family: var(--font-mono); font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 3px; background: var(--bg-2); border: 1px solid var(--border); color: var(--tdim); cursor: pointer; letter-spacing: 1px; transition: all var(--t); text-decoration: none; display: inline-block; white-space: nowrap; }
+.dl-btn:hover { border-color: var(--accent); color: var(--accent); }
+.dl-btn.json { border-color: #a78bfa44; color: #a78bfa88; }
+.dl-btn.json:hover { border-color: #a78bfa; color: #a78bfa; }
+
+/* ── Empty state ── */
+.empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 80px 24px; font-family: var(--font-mono); font-size: 11px; color: var(--tdim); letter-spacing: 1px; text-align: center; border: 1px dashed var(--border); border-radius: var(--r); }
+.empty-icon { font-size: 36px; opacity: 0.3; }
+
+/* ── Progress ── */
+.progress-bar { height: 2px; background: var(--bg-3); border-radius: 1px; overflow: hidden; margin-top: 8px; display: none; }
+.progress-fill { height: 100%; background: var(--accent); border-radius: 1px; width: 0%; transition: width 0.1s linear; }
+
+/* ── Hidden inputs ── */
+input[type=file] { display: none; }
+
+/* ── Recording indicator ── */
+.rec-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 6px; animation: blink 1s infinite; }
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.2; } }
+
+/* Mobile tweaks */
+@media (max-width: 700px) {
+  main { grid-template-columns: 1fr; }
+  aside { height: auto; position: static; }
+  .content { padding: 16px; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+<header>
+  <div>
+    <div class="logo">FRAME GRID</div>
+    <div class="logo-sub">CONSCIOUSNODE SOFTWORKS — v2.0</div>
+  </div>
+  <div class="header-right">
+    <div class="chip etok" id="etok-chip" style="display:none">◈ ELASTICTOK</div>
+    <div class="chip" id="status-chip">IDLE</div>
+  </div>
+</header>
+
+<main>
+<aside>
+
+  <!-- Source -->
+  <div class="panel">
+    <div class="panel-title">Source</div>
+    <div class="source-btns">
+      <button class="src-btn" id="btn-camera" onclick="selectSource('camera')">
+        <span class="src-icon">📷</span>camera
+      </button>
+      <button class="src-btn" id="btn-file" onclick="selectSource('file')">
+        <span class="src-icon">🎬</span>upload
+      </button>
+    </div>
+    <input type="file" id="file-input" accept="video/*">
+  </div>
+
+  <!-- Parameters -->
+  <div class="panel">
+    <div class="panel-title">Parameters</div>
+
+    <div class="ctrl-row">
+      <div class="ctrl-label"><span>FPS SAMPLE</span><span class="ctrl-val" id="val-fps">3</span></div>
+      <input type="range" id="ctrl-fps" min="1" max="15" step="0.5" value="3" oninput="updateParam('fps',this.value)">
+    </div>
+    <div class="ctrl-row">
+      <div class="ctrl-label"><span>FRAME WIDTH</span><span class="ctrl-val" id="val-fw">256</span>px</div>
+      <input type="range" id="ctrl-fw" min="96" max="400" step="16" value="256" oninput="updateParam('fw',this.value)">
+    </div>
+    <div class="ctrl-row">
+      <div class="ctrl-label"><span>FRAME HEIGHT</span><span class="ctrl-val" id="val-fh">192</span>px</div>
+      <input type="range" id="ctrl-fh" min="72" max="300" step="16" value="192" oninput="updateParam('fh',this.value)">
+    </div>
+    <div class="ctrl-row">
+      <div class="ctrl-label"><span>GRID COLS</span><span class="ctrl-val" id="val-gc">5</span></div>
+      <input type="range" id="ctrl-gc" min="2" max="8" step="1" value="5" oninput="updateParam('gc',this.value)">
+    </div>
+    <div class="ctrl-row">
+      <div class="ctrl-label"><span>GRID ROWS</span><span class="ctrl-val" id="val-gr">4</span></div>
+      <input type="range" id="ctrl-gr" min="2" max="8" step="1" value="4" oninput="updateParam('gr',this.value)">
+    </div>
+    <div class="ctrl-row">
+      <div class="ctrl-label"><span>MAX GRIDS</span><span class="ctrl-val" id="val-mg">20</span></div>
+      <input type="range" id="ctrl-mg" min="1" max="20" step="1" value="20" oninput="updateParam('mg',this.value)">
+    </div>
+    <div class="ctrl-row">
+      <div class="ctrl-label"><span>LABEL STYLE</span></div>
+      <select id="ctrl-label-style">
+        <option value="standard">F## | #.#s (standard)</option>
+        <option value="minimal">F## only</option>
+        <option value="full">F## | #.##s | ##fps</option>
+        <option value="rosa">F## | #.#s | ◈CR (ROSA)</option>
+      </select>
+    </div>
+    <div style="margin-top:4px">
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-n" id="stat-frames">—</div><div class="stat-l">frames/grid</div></div>
+        <div class="stat"><div class="stat-n" id="stat-coverage">—</div><div class="stat-l">sec/grid</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ElasticTOK + Dedup -->
+  <div class="panel">
+    <div class="panel-title">Analysis</div>
+
+    <div class="toggle-row">
+      <div class="toggle-label">ELASTICTOK <span id="etok-state">OFF</span></div>
+      <label class="toggle"><input type="checkbox" id="ctrl-etok" onchange="toggleETok(this.checked)"><span class="toggle-track"></span></label>
+    </div>
+    <div style="font-family:var(--font-mono);font-size:9px;color:var(--tdim);margin-bottom:14px;line-height:1.6">
+      ROSA suffix automaton fingerprint per frame. Shows CR in label. Exports JSON manifest.
+    </div>
+
+    <div class="toggle-row">
+      <div class="toggle-label">DEDUP <span id="dedup-state">OFF</span></div>
+      <label class="toggle"><input type="checkbox" id="ctrl-dedup" onchange="toggleDedup(this.checked)"><span class="toggle-track"></span></label>
+    </div>
+    <div class="ctrl-row" id="dedup-controls" style="display:none">
+      <div class="ctrl-label"><span>MAD THRESHOLD</span><span class="ctrl-val" id="val-mad">8</span></div>
+      <input type="range" id="ctrl-mad" min="1" max="30" step="1" value="8" oninput="updateParam('mad',this.value)">
+    </div>
+    <div class="ctrl-row" id="dedup-mode-row" style="display:none">
+      <div class="ctrl-label"><span>DEDUP MODE</span></div>
+      <select id="ctrl-dedup-mode">
+        <option value="skip">Skip duplicates</option>
+        <option value="mark">Mark duplicates (keep)</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="panel">
+    <div class="panel-title">Actions</div>
+    <button class="action-btn" id="btn-capture" onclick="startCapture()" disabled>▶ CAPTURE</button>
+    <button class="action-btn" id="btn-stop" onclick="stopCapture()" disabled style="margin-top:8px;background:rgba(239,68,68,0.1);border-color:#ef4444;color:#ef4444">■ STOP</button>
+    <button class="action-btn secondary" id="btn-process" onclick="processVideo()" disabled>⬡ PROCESS VIDEO</button>
+    <div class="progress-bar" id="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+  </div>
+
+  <!-- Stats -->
+  <div class="panel">
+    <div class="panel-title">Session</div>
+    <div class="stat-grid" id="stat-grid-normal">
+      <div class="stat"><div class="stat-n" id="stat-grids-out">0</div><div class="stat-l">grids out</div></div>
+      <div class="stat"><div class="stat-n" id="stat-total-frames">0</div><div class="stat-l">total frames</div></div>
+    </div>
+    <div class="stat-grid-3" id="stat-grid-dedup" style="display:none;margin-top:8px">
+      <div class="stat"><div class="stat-n" id="stat-kept">0</div><div class="stat-l">kept</div></div>
+      <div class="stat"><div class="stat-n warn" id="stat-duped">0</div><div class="stat-l">duped</div></div>
+      <div class="stat"><div class="stat-n" id="stat-dedup-pct">—</div><div class="stat-l">dup %</div></div>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="log" id="log"></div>
+
+</aside>
+
+<div class="content">
+
+  <div class="preview-wrap" id="preview-wrap" style="display:none">
+    <div class="preview-label" id="preview-label">PREVIEW</div>
+    <video id="camera-video" autoplay muted playsinline></video>
+    <video id="preview-video" controls></video>
+  </div>
+
+  <div class="grids-section" id="grids-section">
+    <div class="empty" id="empty-state">
+      <div class="empty-icon">⬡</div>
+      <div>SELECT A SOURCE TO BEGIN</div>
+      <div style="font-size:9px;opacity:0.6">camera feed or uploaded video → sampled frames → contact-sheet grids + ROSA fingerprints</div>
+    </div>
+  </div>
+
+</div>
+</main>
+</div>
+
+<canvas id="proc-canvas" style="display:none"></canvas>
+<canvas id="scratch-canvas" style="display:none"></canvas>
+
+<script>
+'use strict';
+
+// ══════════════════════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════════════════════
+const S = {
+  source: null, stream: null, videoEl: null,
+  recording: false, recordedChunks: [], mediaRecorder: null,
+  params: { fps: 3, fw: 256, fh: 192, gc: 5, gr: 4, mg: 20, mad: 8 },
+  etok: false, dedup: false,
+  gridsOut: 0, totalFrames: 0, totalDups: 0,
+};
+
+// ══════════════════════════════════════════════════════════════════
+//  LOG
+// ══════════════════════════════════════════════════════════════════
+function log(msg, type = 'info') {
+  const el = document.getElementById('log');
+  const ts = new Date().toLocaleTimeString('en', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const d = document.createElement('div');
+  d.className = 'log-entry';
+  d.innerHTML = `<span class="log-ts">${ts}</span><span class="log-${type}">${msg}</span>`;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  PARAMS + TOGGLES
+// ══════════════════════════════════════════════════════════════════
+function updateParam(key, val) {
+  S.params[key] = parseFloat(val);
+  document.getElementById(`val-${key}`)&&(document.getElementById(`val-${key}`).textContent = val);
+  updateStats();
+}
+function updateStats() {
+  const { fps, gc, gr } = S.params;
+  const fpg = gc * gr;
+  document.getElementById('stat-frames').textContent = fpg;
+  document.getElementById('stat-coverage').textContent = (fpg / fps).toFixed(1);
+}
+updateStats();
+
+function toggleETok(on) {
+  S.etok = on;
+  document.getElementById('etok-state').textContent = on ? 'ON' : 'OFF';
+  document.getElementById('etok-chip').style.display = on ? '' : 'none';
+  if (on) log('ElasticTOK enabled — ROSA fingerprint per frame', 'etok');
+}
+function toggleDedup(on) {
+  S.dedup = on;
+  document.getElementById('dedup-state').textContent = on ? 'ON' : 'OFF';
+  document.getElementById('dedup-controls').style.display = on ? '' : 'none';
+  document.getElementById('dedup-mode-row').style.display = on ? '' : 'none';
+  document.getElementById('stat-grid-dedup').style.display = on ? '' : 'none';
+  if (on) log(`Dedup enabled — MAD threshold: ${S.params.mad}`, 'info');
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SUFFIX AUTOMATON (ROSA kernel)
+// ══════════════════════════════════════════════════════════════════
+class SuffixAutomaton {
+  constructor() {
+    this.states = [{ len: 0, link: -1, next: new Map() }];
+    this.last = 0;
+  }
+  extend(c) {
+    const cur = this.states.length;
+    this.states.push({ len: this.states[this.last].len + 1, link: -1, next: new Map() });
+    let p = this.last;
+    while (p !== -1 && !this.states[p].next.has(c)) {
+      this.states[p].next.set(c, cur);
+      p = this.states[p].link;
+    }
+    if (p === -1) {
+      this.states[cur].link = 0;
+    } else {
+      const q = this.states[p].next.get(c);
+      if (this.states[q].len === this.states[p].len + 1) {
+        this.states[cur].link = q;
+      } else {
+        const clone = this.states.length;
+        this.states.push({ len: this.states[p].len + 1, link: this.states[q].link, next: new Map(this.states[q].next) });
+        while (p !== -1 && this.states[p].next.get(c) === q) {
+          this.states[p].next.set(c, clone);
+          p = this.states[p].link;
+        }
+        this.states[q].link = clone;
+        this.states[cur].link = clone;
+      }
+    }
+    this.last = cur;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  ELASTICTOK — ROSA frame fingerprint
+//  16×16 patch grid · RGB mean quantized → 768 tokens
+//  ROSA suffix automaton → CR + state count + packed fingerprint
+// ══════════════════════════════════════════════════════════════════
+function elasticTok(imageData, fw, fh) {
+  const PATCHES = 16;
+  const pw = fw / PATCHES, ph = fh / PATCHES;
+  const data = imageData.data;
+  const toks = new Uint8Array(PATCHES * PATCHES * 3);
+  let t = 0;
+  for (let py = 0; py < PATCHES; py++) {
+    for (let px = 0; px < PATCHES; px++) {
+      let r = 0, g = 0, b = 0, n = 0;
+      const x0 = Math.floor(px * pw), x1 = Math.min(fw, Math.floor((px + 1) * pw));
+      const y0 = Math.floor(py * ph), y1 = Math.min(fh, Math.floor((py + 1) * ph));
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        const i = (y * fw + x) * 4;
+        r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+      }
+      if (n > 0) { toks[t++] = Math.min(127, r / n / 2 | 0); toks[t++] = Math.min(127, g / n / 2 | 0); toks[t++] = Math.min(127, b / n / 2 | 0); }
+      else { toks[t++] = 0; toks[t++] = 0; toks[t++] = 0; }
+    }
+  }
+
+  // Build suffix automaton
+  const sa = new SuffixAutomaton();
+  for (const tok of toks) sa.extend(tok);
+  const stateCount = sa.states.length;
+  const cr = +(toks.length / stateCount).toFixed(2);
+
+  // Float32[128] fingerprint: transition density per state (first 128)
+  const fp = new Float32Array(128);
+  const nStates = Math.min(stateCount, 128);
+  for (let i = 0; i < nStates; i++) fp[i] = sa.states[i].next.size / 128.0;
+
+  // Centre and pack to ternary b1.58
+  let mean = 0; for (let i = 0; i < 128; i++) mean += fp[i]; mean /= 128;
+  let gamma = 0; for (let i = 0; i < 128; i++) gamma += Math.abs(fp[i] - mean); gamma = gamma / 128 + 1e-8;
+  const packed = new Uint8Array(32);
+  for (let i = 0; i < 128; i++) {
+    const v = (fp[i] - mean) / gamma;
+    const bits = v > 0.5 ? 1 : v < -0.5 ? 2 : 0;
+    packed[i >> 2] |= bits << ((i & 3) * 2);
+  }
+
+  return { cr, stateCount, toks, fp, packed };
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  FRAME DEDUPLICATION — Mean Absolute Difference
+// ══════════════════════════════════════════════════════════════════
+function frameMad(a, b) {
+  // a, b are Uint8ClampedArray (RGBA)
+  let sum = 0;
+  for (let i = 0; i < a.length; i += 4) sum += Math.abs(a[i] - b[i]) + Math.abs(a[i+1] - b[i+1]) + Math.abs(a[i+2] - b[i+2]);
+  return sum / (a.length / 4 * 3);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SOURCE SELECTION
+// ══════════════════════════════════════════════════════════════════
+function selectSource(type) {
+  S.source = type;
+  document.getElementById('btn-camera').classList.toggle('active', type === 'camera');
+  document.getElementById('btn-file').classList.toggle('active', type === 'file');
+  stopCapture();
+  type === 'camera' ? initCamera() : document.getElementById('file-input').click();
+}
+
+document.getElementById('file-input').addEventListener('change', function () {
+  const file = this.files[0];
+  if (!file) return;
+  const vid = document.getElementById('preview-video');
+  vid.src = URL.createObjectURL(file);
+  vid.style.display = 'block';
+  document.getElementById('camera-video').style.display = 'none';
+  document.getElementById('preview-wrap').style.display = 'block';
+  document.getElementById('preview-label').textContent = 'VIDEO — ' + file.name;
+  document.getElementById('btn-process').disabled = false;
+  document.getElementById('btn-capture').disabled = true;
+  document.getElementById('empty-state').style.display = 'none';
+  S.videoEl = vid;
+  setStatus('FILE LOADED', 'live');
+  log(`Loaded: ${file.name}`, 'ok');
+  log('Ready to process', 'info');
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  CAMERA
+// ══════════════════════════════════════════════════════════════════
+async function initCamera() {
+  setStatus('REQUESTING…', '');
+  log('Requesting camera permission…', 'info');
+  const constraints = [
+    { video: { facingMode: { ideal: 'environment' } }, audio: false },
+    { video: { facingMode: 'user' }, audio: false },
+    { video: true, audio: false },
+  ];
+  let stream = null, lastErr = null;
+  for (const c of constraints) {
+    try { stream = await navigator.mediaDevices.getUserMedia(c); break; }
+    catch (e) { lastErr = e; log(`Trying fallback… (${e.name})`, 'dim'); }
+  }
+  if (!stream) {
+    log(`Camera failed: ${lastErr?.name} — ${lastErr?.message}`, 'warn');
+    setStatus('CAM ERROR', '');
+    document.getElementById('btn-camera').classList.remove('active');
+    return;
+  }
+  S.stream = stream;
+  const vid = document.getElementById('camera-video');
+  vid.srcObject = stream;
+  await new Promise(r => { vid.onloadedmetadata = r; setTimeout(r, 2000); });
+  vid.play().catch(() => {});
+  vid.style.display = 'block';
+  document.getElementById('preview-video').style.display = 'none';
+  document.getElementById('preview-wrap').style.display = 'block';
+  document.getElementById('preview-label').textContent = 'CAMERA — LIVE';
+  document.getElementById('btn-capture').disabled = false;
+  document.getElementById('btn-process').disabled = true;
+  document.getElementById('empty-state').style.display = 'none';
+  S.videoEl = vid;
+  setStatus('CAMERA LIVE', 'live');
+  log(`Camera live: ${stream.getVideoTracks()[0]?.label || 'unknown'}`, 'ok');
+}
+
+function startCapture() {
+  if (!S.stream) return;
+  S.recordedChunks = [];
+  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+  S.mediaRecorder = new MediaRecorder(S.stream, { mimeType });
+  S.mediaRecorder.ondataavailable = e => { if (e.data.size > 0) S.recordedChunks.push(e.data); };
+  S.mediaRecorder.onstop = () => onRecordingStop();
+  S.mediaRecorder.start(200);
+  S.recording = true;
+  document.getElementById('btn-capture').disabled = true;
+  document.getElementById('btn-stop').disabled = false;
+  document.getElementById('preview-label').innerHTML = '<span class="rec-dot"></span>RECORDING';
+  setStatus('RECORDING', 'live');
+  log('Recording started', 'ok');
+}
+
+function stopCapture() {
+  if (S.mediaRecorder && S.recording) {
+    S.mediaRecorder.stop(); S.recording = false;
+    document.getElementById('btn-stop').disabled = true;
+    log('Recording stopped — processing…', 'info');
+  }
+}
+
+function onRecordingStop() {
+  const blob = new Blob(S.recordedChunks, { type: 'video/webm' });
+  const vid = document.getElementById('preview-video');
+  vid.src = URL.createObjectURL(blob);
+  vid.style.display = 'block';
+  document.getElementById('camera-video').style.display = 'none';
+  document.getElementById('preview-label').textContent = 'RECORDED CLIP';
+  S.videoEl = vid;
+  document.getElementById('btn-process').disabled = false;
+  document.getElementById('btn-capture').disabled = false;
+  setStatus('CLIP READY', 'live');
+  log(`Clip ready: ${(S.recordedChunks.reduce((a, c) => a + c.size, 0) / 1024).toFixed(0)}KB`, 'ok');
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  FRAME EXTRACTION + GRID ASSEMBLY
+// ══════════════════════════════════════════════════════════════════
+async function processVideo() {
+  const vid = S.videoEl;
+  if (!vid || !vid.src) { log('No video source', 'warn'); return; }
+
+  const { fps, fw, fh, gc, gr, mg, mad } = S.params;
+  const framesPerGrid = gc * gr;
+  const dedupMode = document.getElementById('ctrl-dedup-mode').value;
+
+  document.getElementById('btn-process').disabled = true;
+  document.getElementById('empty-state').style.display = 'none';
+  setStatus('PROCESSING', '');
+
+  const bar = document.getElementById('progress-bar');
+  const fill = document.getElementById('progress-fill');
+  bar.style.display = 'block';
+  fill.style.width = '0%';
+
+  const modeLine = `${fps}fps · ${fw}×${fh}px · ${gc}×${gr}${S.etok ? ' · ◈ ElasticTOK' : ''}${S.dedup ? ` · dedup MAD≤${mad}` : ''}`;
+  log(`Extracting: ${modeLine}`, 'info');
+
+  const duration = await resolveDuration(vid);
+  if (!duration || !isFinite(duration)) {
+    log('Cannot determine video duration', 'warn');
+    document.getElementById('btn-process').disabled = false;
+    bar.style.display = 'none';
+    return;
+  }
+  log(`Duration: ${duration.toFixed(2)}s`, 'dim');
+
+  const interval = 1 / fps;
+  const totalPossible = Math.floor(duration * fps);
+  const maxFrames = framesPerGrid * mg;
+  const targetCount = Math.min(totalPossible, maxFrames);
+  const gridCount = Math.ceil(targetCount / framesPerGrid);
+  log(`Target: ${targetCount} frames → ${gridCount} grid(s)`, 'info');
+
+  // Single reusable scratch canvas — no per-frame alloc
+  const proc = document.getElementById('proc-canvas');
+  proc.width = fw; proc.height = fh;
+  const pctx = proc.getContext('2d');
+
+  // ── Extract frames ──────────────────────────────────────────────
+  const frames = [];
+  let dupCount = 0;
+  let lastKeptData = null;
+
+  for (let i = 0; i < targetCount; i++) {
+    const t = i * interval;
+    await seekTo(vid, t);
+    pctx.drawImage(vid, 0, 0, fw, fh);
+    const imgData = pctx.getImageData(0, 0, fw, fh);
+
+    // Deduplication check
+    let isDup = false;
+    if (S.dedup && lastKeptData) {
+      const mad_ = frameMad(imgData.data, lastKeptData);
+      if (mad_ < mad) {
+        isDup = true; dupCount++;
+        if (dedupMode === 'skip') {
+          fill.style.width = `${Math.round(i / targetCount * 60)}%`;
+          if (i % 5 === 0) await tick();
+          continue;
+        }
+      }
+    }
+    if (!isDup) lastKeptData = new Uint8ClampedArray(imgData.data);
+
+    // ElasticTOK fingerprint
+    let etokResult = null;
+    if (S.etok) etokResult = elasticTok(imgData, fw, fh);
+
+    frames.push({ imageData: imgData, time: t, index: frames.length, isDup, etok: etokResult });
+    fill.style.width = `${Math.round(i / targetCount * 60)}%`;
+    if (i % 5 === 0) await tick();
+  }
+
+  log(`Extracted ${frames.length} frames${S.dedup ? ` (${dupCount} dup${dupCount!==1?'s':''} ${dedupMode==='skip'?'skipped':'marked'})` : ''}`, 'ok');
+  if (S.etok) {
+    const avgCr = (frames.reduce((a, f) => a + (f.etok?.cr ?? 0), 0) / frames.length).toFixed(2);
+    log(`◈ ROSA avg CR: ${avgCr}`, 'etok');
+  }
+
+  // ── Clear old grids ─────────────────────────────────────────────
+  document.getElementById('grids-section').querySelectorAll('.grid-card').forEach(c => c.remove());
+  S.gridsOut = 0; S.totalFrames = 0; S.totalDups = dupCount;
+
+  const labelStyle = document.getElementById('ctrl-label-style').value;
+  const gridW = gc * fw, gridH = gr * fh;
+  const scratch = document.getElementById('scratch-canvas');
+
+  // ── Assemble grids ──────────────────────────────────────────────
+  const actualGridCount = Math.ceil(frames.length / framesPerGrid);
+
+  for (let g = 0; g < actualGridCount; g++) {
+    const gFrames = frames.slice(g * framesPerGrid, (g + 1) * framesPerGrid);
+
+    // Grid canvas
+    const gridCanvas = document.createElement('canvas');
+    gridCanvas.width = gridW; gridCanvas.height = gridH;
+    const ctx = gridCanvas.getContext('2d');
+    ctx.fillStyle = '#060809';
+    ctx.fillRect(0, 0, gridW, gridH);
+
+    // JSON manifest accumulator
+    const manifest = { tool: 'FrameGrid v2.0', grid: g + 1, frames: [] };
+
+    gFrames.forEach((frame, idx) => {
+      const col = idx % gc, row = Math.floor(idx / gc);
+      const x = col * fw, y = row * fh;
+
+      // Draw frame via scratch canvas (single reusable allocation)
+      scratch.width = fw; scratch.height = fh;
+      scratch.getContext('2d').putImageData(frame.imageData, 0, 0);
+      ctx.drawImage(scratch, x, y, fw, fh);
+
+      // Frame border — dim if duplicate
+      ctx.strokeStyle = frame.isDup ? 'rgba(248,113,113,0.3)' : 'rgba(30,45,61,0.8)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, fw - 1, fh - 1);
+
+      // Label bar
+      const barH = Math.max(16, Math.round(fh * 0.1));
+      ctx.fillStyle = frame.isDup ? 'rgba(30,10,10,0.88)' : 'rgba(6,8,9,0.82)';
+      ctx.fillRect(x, y + fh - barH, fw, barH);
+
+      // Label text
+      const globalIdx = g * framesPerGrid + idx;
+      const label = buildLabel(globalIdx, frame.time, fps, labelStyle, frame.etok?.cr);
+      const dupSuffix = frame.isDup ? ' [DUP]' : '';
+      const fontSize = Math.max(8, Math.round(barH * 0.55));
+      ctx.font = `${fontSize}px ui-monospace, monospace`;
+      ctx.fillStyle = frame.isDup ? '#f87171' : '#00e5ff';
+      ctx.fillText(label + dupSuffix, x + 4, y + fh - Math.round(barH * 0.22));
+
+      // JSON manifest entry
+      if (S.etok && frame.etok) {
+        manifest.frames.push({
+          index: globalIdx, time: +frame.time.toFixed(3),
+          isDup: frame.isDup, cr: frame.etok.cr,
+          stateCount: frame.etok.stateCount,
+          packed: Array.from(frame.etok.packed),
+        });
+      }
+    });
+
+    // Grid outer border
+    ctx.strokeStyle = 'rgba(0,229,255,0.15)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, gridW - 1, gridH - 1);
+
+    // Header bar
+    const hdrH = 20;
+    const hdrCanvas = document.createElement('canvas');
+    hdrCanvas.width = gridW; hdrCanvas.height = gridH + hdrH;
+    const hctx = hdrCanvas.getContext('2d');
+    hctx.fillStyle = '#060809';
+    hctx.fillRect(0, 0, gridW, hdrH);
+    hctx.font = 'bold 9px ui-monospace, monospace';
+    hctx.fillStyle = '#4a6070';
+    const t0 = gFrames[0]?.time.toFixed(2) ?? '—';
+    const t1 = gFrames[gFrames.length - 1]?.time.toFixed(2) ?? '—';
+    const etokTag = S.etok ? `  ◈ ElasticTOK` : '';
+    hctx.fillText(`GRID ${String(g+1).padStart(2,'0')} / ${actualGridCount}   FRAMES ${g*framesPerGrid+1}–${g*framesPerGrid+gFrames.length}   T: ${t0}s → ${t1}s   ${fw}×${fh}px  ${gc}×${gr}${etokTag}`, 8, 13);
+    hctx.drawImage(gridCanvas, 0, hdrH);
+
+    // Card
+    const card = document.createElement('div');
+    card.className = 'grid-card';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'grid-card-header';
+    hdr.innerHTML = `<span>GRID ${String(g+1).padStart(2,'0')}</span><span style="color:var(--tdim)">${gFrames.length} frames · ${t0}s → ${t1}s</span>`;
+
+    const actions = document.createElement('div');
+    actions.className = 'grid-card-actions';
+
+    const dlPng = document.createElement('a');
+    dlPng.className = 'dl-btn';
+    dlPng.textContent = '↓ PNG';
+    dlPng.href = hdrCanvas.toDataURL('image/png');
+    dlPng.download = `framegrid_${String(g+1).padStart(2,'0')}_${Date.now()}.png`;
+    actions.appendChild(dlPng);
+
+    // JSON export — only when ElasticTOK enabled
+    if (S.etok && manifest.frames.length > 0) {
+      const jsonBlob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
+      const dlJson = document.createElement('a');
+      dlJson.className = 'dl-btn json';
+      dlJson.textContent = '↓ JSON';
+      dlJson.href = URL.createObjectURL(jsonBlob);
+      dlJson.download = `framegrid_${String(g+1).padStart(2,'0')}_manifest.json`;
+      actions.appendChild(dlJson);
+    }
+
+    hdr.appendChild(actions);
+
+    const displayCanvas = document.createElement('canvas');
+    displayCanvas.className = 'grid-canvas';
+    displayCanvas.width = hdrCanvas.width;
+    displayCanvas.height = hdrCanvas.height;
+    displayCanvas.getContext('2d').drawImage(hdrCanvas, 0, 0);
+
+    card.appendChild(hdr);
+    card.appendChild(displayCanvas);
+    document.getElementById('grids-section').appendChild(card);
+
+    S.gridsOut++;
+    S.totalFrames += gFrames.length;
+    document.getElementById('stat-grids-out').textContent = S.gridsOut;
+    document.getElementById('stat-total-frames').textContent = S.totalFrames;
+    if (S.dedup) {
+      const kept = frames.filter(f => !f.isDup).length;
+      const duped = frames.filter(f => f.isDup).length;
+      document.getElementById('stat-kept').textContent = kept;
+      document.getElementById('stat-duped').textContent = duped;
+      document.getElementById('stat-dedup-pct').textContent = frames.length ? Math.round(duped / frames.length * 100) + '%' : '—';
+    }
+
+    fill.style.width = `${Math.round(60 + (g / actualGridCount) * 40)}%`;
+    await tick();
+  }
+
+  fill.style.width = '100%';
+  setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 800);
+  document.getElementById('btn-process').disabled = false;
+  setStatus('DONE', 'live');
+  log(`Done — ${S.gridsOut} grid(s), ${S.totalFrames} frames`, 'ok');
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════════════════════════
+function buildLabel(idx, time, fps, style, cr) {
+  const fNum = `F${String(idx + 1).padStart(2, '0')}`;
+  if (style === 'minimal') return fNum;
+  if (style === 'full') return `${fNum} | ${time.toFixed(2)}s | ${fps}fps`;
+  if (style === 'rosa') return `${fNum} | ${time.toFixed(1)}s | ◈${cr != null ? cr.toFixed(1) : '—'}`;
+  return `${fNum} | ${time.toFixed(1)}s`;
+}
+
+// Mobile Chrome WebM blob duration=Infinity fix (v1.3, Ed Interim)
+function resolveDuration(vid) {
+  return new Promise(resolve => {
+    if (vid.readyState >= 1 && isFinite(vid.duration) && vid.duration > 0) {
+      resolve(vid.duration); return;
+    }
+    const afterMeta = () => {
+      if (isFinite(vid.duration) && vid.duration > 0) { resolve(vid.duration); return; }
+      log('Duration Infinity — seeking to probe end…', 'dim');
+      const onDurationChange = () => {
+        if (isFinite(vid.duration) && vid.duration > 0) {
+          vid.removeEventListener('durationchange', onDurationChange);
+          vid.currentTime = 0;
+          vid.addEventListener('seeked', () => resolve(vid.duration), { once: true });
+        }
+      };
+      vid.addEventListener('durationchange', onDurationChange);
+      vid.currentTime = 1e10;
+    };
+    if (vid.readyState >= 1) afterMeta();
+    else { vid.addEventListener('loadedmetadata', afterMeta, { once: true }); vid.load(); }
+    setTimeout(() => { const d = vid.duration; resolve(isFinite(d) && d > 0 ? d : null); }, 8000);
+  });
+}
+
+function seekTo(vid, t) {
+  return new Promise(resolve => {
+    const fn = () => { vid.removeEventListener('seeked', fn); resolve(); };
+    vid.addEventListener('seeked', fn);
+    vid.currentTime = t;
+  });
+}
+
+function tick() { return new Promise(r => setTimeout(r, 0)); }
+
+function setStatus(text, cls) {
+  const chip = document.getElementById('status-chip');
+  chip.textContent = text;
+  chip.className = 'chip' + (cls ? ' ' + cls : '');
+}
+</script>
+</body>
+</html>
