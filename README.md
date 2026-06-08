@@ -123,6 +123,16 @@ Video source (camera / file)
 
 ## Changelog
 
+### v2.1 — 2026-06-07 · Kehai Interim
+
+- **GIF export** — pure JS GIF89a encoder, zero dependencies, Xinu-compliant. Toggle in Analysis panel. After processing, a green download bar appears with the animated GIF ready to grab.
+  - LZW compression with numeric-keyed Map (fast — no string allocation per code pair)
+  - 8×8×4 uniform 256-color palette (3-bit R, 3-bit G, 2-bit B), O(1) quantization per pixel
+  - Frames sub-sampled evenly from full extraction set up to configurable max (default 60)
+  - Configurable GIF width (160–480px), frame delay (4–50 centiseconds)
+  - NETSCAPE2.0 loop extension for infinite loop
+  - File size shown on download bar before saving
+
 ### v2.0 — 2026-06-07 · Kehai Interim
 
 - **Xinu compliance** — Google Fonts CDN import removed. System monospace stack: `ui-monospace, 'Cascadia Code', 'Fira Mono', 'Consolas', monospace`. Zero external calls.
