@@ -3,45 +3,35 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Frame Grid v2.0 — ConsciousNode SoftWorks</title>
+<title>Frame Grid v2.1 — ConsciousNode SoftWorks</title>
 <!--
   Frame Grid v2.1
   ConsciousNode SoftWorks
 
   Contact-sheet composite generator + ElasticTOK frame fingerprinting.
-  Camera or uploaded video → sampled frames → ROSA-fingerprinted labeled
-  grid → downloadable PNG + JSON manifest.
+  Camera or uploaded video → sampled frames →
+  ROSA-fingerprinted labeled grid → downloadable PNG + JSON manifest.
+  Single file, offline, no external dependencies.
 
-  v2.1 — Kehai Interim
-    GIF export: pure JS GIF89a encoder, zero deps, Xinu-compliant.
-      LZW compression with numeric-keyed Map (fast, no string alloc).
-      8×8×4 uniform 256-color palette (3-bit R, 3-bit G, 2-bit B).
-      Controls: max frames (20-150), GIF width (160-480), delay (cs).
-      Frames sub-sampled evenly across full extraction set.
-      NETSCAPE2.0 loop extension for infinite loop.
-      Single animated GIF per session, shown after all grids render.
+  v2.1 — debug pass
+    Fix: dedup stats were wrong in skip mode (duped always 0).
+    Fix: scratch canvas no longer resized per frame (was reallocating).
+    Fix: grids are assembled while extracting, so ImageData is released
+         per frame instead of held for the whole run (memory).
+    Fix: seekTo() resolves immediately when already at the target time and
+         has a timeout fallback, so it cannot hang on a no-op seek.
+    Fix: file names written with textContent, not innerHTML.
+    Fix: processing errors re-enable the PROCESS button (try/finally).
+    Fix: object URLs revoked when replaced or when a grid is cleared.
+    Fix: camera stream stopped before a new one is requested.
 
   v2.0 — Kehai Interim
-    Xinu compliance: Google Fonts import removed. System monospace stack.
-    Viewport: user-scalable restored.
     ElasticTOK: SuffixAutomaton + ROSA fingerprint per frame.
-      16×16 patch grid, RGB mean quantization → 768 tokens.
-      ROSA CR + state count computed per frame.
-      CR displayed in frame label bar.
-      JSON manifest export per grid (FPSS-compatible fingerprints).
-    Frame deduplication: MAD threshold comparison vs previous kept frame.
-      Configurable threshold slider (0–20, default 8).
-      Mode toggle: skip duplicates OR mark duplicates (dimmed label).
-    Memory: single reusable scratch canvas. No per-frame canvas alloc.
-    Dedup stats added to Session panel.
-
+    Frame deduplication: MAD threshold, skip or mark mode.
   v1.3 — Ed Interim
-    Fix: mobile Chrome WebM blob duration=Infinity resolution.
-    resolveDuration() force-seeks to end, waits for durationchange.
-
+    Mobile Chrome WebM blob duration=Infinity resolution.
   v1.0–1.2 — Kham / Ed Interim
     Initial implementation.
-    Proof of concept for the ManosNowAware visual pipeline.
 -->
 <style>
 :root {
@@ -88,8 +78,7 @@ header {
 .chip { font-family: var(--font-mono); font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 3px; border: 1px solid var(--border); background: var(--bg-2); color: var(--tdim); letter-spacing: 1px; }
 .chip.live { border-color: var(--ok); color: var(--ok); background: rgba(52,211,153,0.08); }
 .chip.live::before { content: '● '; }
-.chip.etok { border-color: #a78bfa44; color: #a78bfa88; font-size: 9px; }
-.chip.gif  { border-color: #34d39944; color: #34d39988; font-size: 9px; }
+.chip.etok { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); font-size: 9px; }
 
 main { flex: 1; display: grid; grid-template-columns: 320px 1fr; gap: 0; }
 
@@ -98,13 +87,17 @@ aside { background: var(--bg-1); border-right: 1px solid var(--border); display:
 
 .panel { border-bottom: 1px solid var(--border); padding: 20px; }
 .panel-title { font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: var(--tdim); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 16px; }
+.hint { font-family: var(--font-mono); font-size: 9px; color: var(--tdim); line-height: 1.6; margin-bottom: 10px; }
 
 /* ── Source buttons ── */
-.source-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.src-btn { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 8px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r); cursor: pointer; font-family: var(--font-mono); font-size: 10px; color: var(--tdim); letter-spacing: 1px; text-transform: uppercase; transition: all var(--t); }
+.source-btns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.src-btn { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 6px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r); cursor: pointer; font-family: var(--font-mono); font-size: 10px; color: var(--tdim); letter-spacing: 1px; text-transform: uppercase; transition: all var(--t); }
 .src-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
 .src-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); box-shadow: 0 0 12px var(--accent-glow); }
 .src-icon { font-size: 20px; line-height: 1; }
+
+.text-in { width: 100%; padding: 8px 10px; margin-bottom: 8px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r); color: var(--text); font-family: var(--font-mono); font-size: 11px; outline: none; transition: border-color var(--t); }
+.text-in:focus { border-color: var(--accent); }
 
 /* ── Controls ── */
 .ctrl-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
@@ -169,7 +162,7 @@ video, canvas { display: block; width: 100%; max-height: 240px; object-fit: cont
 .grid-card-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 10px; color: var(--tdim); letter-spacing: 1px; gap: 8px; flex-wrap: wrap; }
 .grid-card-header span { color: var(--accent); }
 .grid-card-actions { display: flex; gap: 6px; margin-left: auto; }
-.grid-canvas { display: block; width: 100%; image-rendering: pixelated; }
+.grid-canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; }
 .dl-btn { font-family: var(--font-mono); font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 3px; background: var(--bg-2); border: 1px solid var(--border); color: var(--tdim); cursor: pointer; letter-spacing: 1px; transition: all var(--t); text-decoration: none; display: inline-block; white-space: nowrap; }
 .dl-btn:hover { border-color: var(--accent); color: var(--accent); }
 .dl-btn.json { border-color: #a78bfa44; color: #a78bfa88; }
@@ -208,7 +201,6 @@ input[type=file] { display: none; }
   </div>
   <div class="header-right">
     <div class="chip etok" id="etok-chip" style="display:none">◈ ELASTICTOK</div>
-    <div class="chip gif" id="gif-chip" style="display:none">⬡ GIF</div>
     <div class="chip" id="status-chip">IDLE</div>
   </div>
 </header>
@@ -283,7 +275,7 @@ input[type=file] { display: none; }
       <div class="toggle-label">ELASTICTOK <span id="etok-state">OFF</span></div>
       <label class="toggle"><input type="checkbox" id="ctrl-etok" onchange="toggleETok(this.checked)"><span class="toggle-track"></span></label>
     </div>
-    <div style="font-family:var(--font-mono);font-size:9px;color:var(--tdim);margin-bottom:14px;line-height:1.6">
+    <div class="hint" style="margin-bottom:14px">
       ROSA suffix automaton fingerprint per frame. Shows CR in label. Exports JSON manifest.
     </div>
 
@@ -301,30 +293,6 @@ input[type=file] { display: none; }
         <option value="skip">Skip duplicates</option>
         <option value="mark">Mark duplicates (keep)</option>
       </select>
-    </div>
-
-    <div style="border-top:1px solid var(--border);margin:12px -20px;padding:12px 20px 0"></div>
-
-    <div class="toggle-row">
-      <div class="toggle-label">GIF EXPORT <span id="gif-state">OFF</span></div>
-      <label class="toggle"><input type="checkbox" id="ctrl-gif" onchange="toggleGif(this.checked)"><span class="toggle-track"></span></label>
-    </div>
-    <div id="gif-controls" style="display:none">
-      <div style="font-family:var(--font-mono);font-size:9px;color:var(--tdim);margin-bottom:10px;line-height:1.6">
-        Animated GIF89a. 256-color palette. LZW compressed. Infinite loop.
-      </div>
-      <div class="ctrl-row">
-        <div class="ctrl-label"><span>MAX FRAMES</span><span class="ctrl-val" id="val-gf">60</span></div>
-        <input type="range" id="ctrl-gf" min="20" max="150" step="10" value="60" oninput="updateParam('gf',this.value)">
-      </div>
-      <div class="ctrl-row">
-        <div class="ctrl-label"><span>GIF WIDTH</span><span class="ctrl-val" id="val-gw">320</span>px</div>
-        <input type="range" id="ctrl-gw" min="160" max="480" step="32" value="320" oninput="updateParam('gw',this.value)">
-      </div>
-      <div class="ctrl-row">
-        <div class="ctrl-label"><span>FRAME DELAY</span><span class="ctrl-val" id="val-gd">10</span>cs</div>
-        <input type="range" id="ctrl-gd" min="4" max="50" step="2" value="10" oninput="updateParam('gd',this.value)">
-      </div>
     </div>
   </div>
 
@@ -386,22 +354,28 @@ input[type=file] { display: none; }
 //  STATE
 // ══════════════════════════════════════════════════════════════════
 const S = {
-  source: null, stream: null, videoEl: null,
+  source: null, stream: null, videoEl: null, objUrl: null,
   recording: false, recordedChunks: [], mediaRecorder: null,
-  params: { fps: 3, fw: 256, fh: 192, gc: 5, gr: 4, mg: 20, mad: 8, gf: 60, gw: 320, gd: 10 },
-  etok: false, dedup: false, gif: false,
-  gridsOut: 0, totalFrames: 0, totalDups: 0,
+  params: { fps: 3, fw: 256, fh: 192, gc: 5, gr: 4, mg: 20, mad: 8 },
+  etok: false, dedup: false, busy: false,
+  gridsOut: 0, totalFrames: 0,
 };
 
 // ══════════════════════════════════════════════════════════════════
-//  LOG
+//  LOG  (textContent only — file names and titles are untrusted)
 // ══════════════════════════════════════════════════════════════════
 function log(msg, type = 'info') {
   const el = document.getElementById('log');
   const ts = new Date().toLocaleTimeString('en', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const d = document.createElement('div');
   d.className = 'log-entry';
-  d.innerHTML = `<span class="log-ts">${ts}</span><span class="log-${type}">${msg}</span>`;
+  const tsEl = document.createElement('span');
+  tsEl.className = 'log-ts';
+  tsEl.textContent = ts;
+  const msgEl = document.createElement('span');
+  msgEl.className = 'log-' + type;
+  msgEl.textContent = msg;
+  d.append(tsEl, msgEl);
   el.appendChild(d);
   el.scrollTop = el.scrollHeight;
 }
@@ -411,7 +385,8 @@ function log(msg, type = 'info') {
 // ══════════════════════════════════════════════════════════════════
 function updateParam(key, val) {
   S.params[key] = parseFloat(val);
-  document.getElementById(`val-${key}`)&&(document.getElementById(`val-${key}`).textContent = val);
+  const out = document.getElementById(`val-${key}`);
+  if (out) out.textContent = val;
   updateStats();
 }
 function updateStats() {
@@ -422,13 +397,7 @@ function updateStats() {
 }
 updateStats();
 
-function toggleGif(on) {
-  S.gif = on;
-  document.getElementById('gif-state').textContent = on ? 'ON' : 'OFF';
-  document.getElementById('gif-chip').style.display = on ? '' : 'none';
-  document.getElementById('gif-controls').style.display = on ? '' : 'none';
-  if (on) log(`GIF export enabled — max ${S.params.gf} frames, ${S.params.gw}px wide`, 'ok');
-}
+function toggleETok(on) {
   S.etok = on;
   document.getElementById('etok-state').textContent = on ? 'ON' : 'OFF';
   document.getElementById('etok-chip').style.display = on ? '' : 'none';
@@ -482,8 +451,10 @@ class SuffixAutomaton {
 
 // ══════════════════════════════════════════════════════════════════
 //  ELASTICTOK — ROSA frame fingerprint
-//  16×16 patch grid · RGB mean quantized → 768 tokens
+//  16×16 patch grid · RGB mean quantized (0–127) → 768 tokens
 //  ROSA suffix automaton → CR + state count + packed fingerprint
+//  packed = 128 transition densities, centred, ternary-quantized
+//  (2 bits each, 32 bytes). Export only; no comparison function yet.
 // ══════════════════════════════════════════════════════════════════
 function elasticTok(imageData, fw, fh) {
   const PATCHES = 16;
@@ -500,23 +471,23 @@ function elasticTok(imageData, fw, fh) {
         const i = (y * fw + x) * 4;
         r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
       }
-      if (n > 0) { toks[t++] = Math.min(127, r / n / 2 | 0); toks[t++] = Math.min(127, g / n / 2 | 0); toks[t++] = Math.min(127, b / n / 2 | 0); }
-      else { toks[t++] = 0; toks[t++] = 0; toks[t++] = 0; }
+      if (n > 0) {
+        toks[t++] = Math.min(127, (r / n / 2) | 0);
+        toks[t++] = Math.min(127, (g / n / 2) | 0);
+        toks[t++] = Math.min(127, (b / n / 2) | 0);
+      } else { toks[t++] = 0; toks[t++] = 0; toks[t++] = 0; }
     }
   }
 
-  // Build suffix automaton
   const sa = new SuffixAutomaton();
   for (const tok of toks) sa.extend(tok);
   const stateCount = sa.states.length;
   const cr = +(toks.length / stateCount).toFixed(2);
 
-  // Float32[128] fingerprint: transition density per state (first 128)
   const fp = new Float32Array(128);
   const nStates = Math.min(stateCount, 128);
   for (let i = 0; i < nStates; i++) fp[i] = sa.states[i].next.size / 128.0;
 
-  // Centre and pack to ternary b1.58
   let mean = 0; for (let i = 0; i < 128; i++) mean += fp[i]; mean /= 128;
   let gamma = 0; for (let i = 0; i < 128; i++) gamma += Math.abs(fp[i] - mean); gamma = gamma / 128 + 1e-8;
   const packed = new Uint8Array(32);
@@ -526,139 +497,16 @@ function elasticTok(imageData, fw, fh) {
     packed[i >> 2] |= bits << ((i & 3) * 2);
   }
 
-  return { cr, stateCount, toks, fp, packed };
+  return { cr, stateCount, packed };
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  FRAME DEDUPLICATION — Mean Absolute Difference
+//  FRAME DEDUPLICATION — Mean Absolute Difference (0–255 scale)
 // ══════════════════════════════════════════════════════════════════
 function frameMad(a, b) {
-  // a, b are Uint8ClampedArray (RGBA)
   let sum = 0;
   for (let i = 0; i < a.length; i += 4) sum += Math.abs(a[i] - b[i]) + Math.abs(a[i+1] - b[i+1]) + Math.abs(a[i+2] - b[i+2]);
   return sum / (a.length / 4 * 3);
-}
-
-// ══════════════════════════════════════════════════════════════════
-//  GIF ENCODER — GIF89a · 8×8×4 uniform palette · LZW · pure JS
-//  Zero deps. Xinu-compliant.
-// ══════════════════════════════════════════════════════════════════
-
-// 8×8×4 = 256 color uniform palette (3-bit R, 3-bit G, 2-bit B)
-const GIF_PALETTE = (() => {
-  const p = new Uint8Array(256 * 3);
-  for (let ri = 0; ri < 8; ri++) for (let gi = 0; gi < 8; gi++) for (let bi = 0; bi < 4; bi++) {
-    const idx = ri * 32 + gi * 4 + bi;
-    p[idx*3]   = Math.round(ri * 255 / 7);
-    p[idx*3+1] = Math.round(gi * 255 / 7);
-    p[idx*3+2] = Math.round(bi * 255 / 3);
-  }
-  return p;
-})();
-
-function pixelToGifIdx(r, g, b) {
-  return (Math.round(r * 7 / 255) * 32) | (Math.round(g * 7 / 255) * 4) | Math.round(b * 3 / 255);
-}
-
-function quantizeToIndices(imageData) {
-  const d = imageData.data, n = imageData.width * imageData.height;
-  const idx = new Uint8Array(n);
-  for (let i = 0; i < n; i++) idx[i] = pixelToGifIdx(d[i*4], d[i*4+1], d[i*4+2]);
-  return idx;
-}
-
-function gifLzwEncode(indices) {
-  // LZW with numeric Map keys: key = (prevCode << 8) | pixel
-  // Fast — avoids string allocation per code pair
-  const CLEAR = 256, EOI = 257;
-  let codeSize = 9, nextCode = 258, maxCode = 512;
-  let table = new Map();
-  const bits = []; let bitBuf = 0, bitCount = 0;
-
-  const emit = c => {
-    bitBuf |= c << bitCount; bitCount += codeSize;
-    while (bitCount >= 8) { bits.push(bitBuf & 0xFF); bitBuf >>= 8; bitCount -= 8; }
-  };
-  const reset = () => { table.clear(); codeSize = 9; nextCode = 258; maxCode = 512; };
-
-  emit(CLEAR);
-  let code = indices[0];
-  for (let i = 1; i < indices.length; i++) {
-    const px = indices[i];
-    const key = (code << 8) | px;
-    const found = table.get(key);
-    if (found !== undefined) {
-      code = found;
-    } else {
-      emit(code);
-      if (nextCode < 4096) {
-        table.set(key, nextCode++);
-        if (nextCode > maxCode && codeSize < 12) { codeSize++; maxCode <<= 1; }
-      } else { emit(CLEAR); reset(); }
-      code = px;
-    }
-  }
-  emit(code); emit(EOI);
-  if (bitCount > 0) bits.push(bitBuf & 0xFF);
-  return bits;
-}
-
-function gifSubBlocks(data) {
-  const out = [];
-  for (let i = 0; i < data.length; i += 255) { const c = data.slice(i, i+255); out.push(c.length, ...c); }
-  out.push(0); return out;
-}
-
-const le16 = n => [n & 0xFF, (n >> 8) & 0xFF];
-
-async function buildGif(allFrames, gifW, gifH, maxFrames, delayCs, onProgress) {
-  // Sub-sample frames evenly
-  const step = allFrames.length <= maxFrames ? 1 : allFrames.length / maxFrames;
-  const picked = [];
-  for (let i = 0; i < allFrames.length && picked.length < maxFrames; i = Math.floor((picked.length + 1) * step))
-    picked.push(allFrames[Math.min(Math.floor(i), allFrames.length - 1)]);
-
-  const aspectH = Math.round(gifH * gifW / allFrames[0].imageData.width);
-
-  // Resampling canvas
-  const rc = document.createElement('canvas'); rc.width = gifW; rc.height = aspectH;
-  const rctx = rc.getContext('2d');
-  const rSrc = document.createElement('canvas');
-  rSrc.width  = allFrames[0].imageData.width;
-  rSrc.height = allFrames[0].imageData.height;
-  const rsctx = rSrc.getContext('2d');
-
-  const bytes = [];
-  // Header
-  bytes.push(0x47,0x49,0x46,0x38,0x39,0x61); // GIF89a
-  bytes.push(...le16(gifW), ...le16(aspectH));
-  bytes.push(0b11110111, 0, 0); // global palette, 256 colors, bg=0, aspect=0
-  for (let i = 0; i < 768; i++) bytes.push(GIF_PALETTE[i]); // global color table
-
-  // NETSCAPE loop extension (infinite)
-  bytes.push(0x21,0xFF,0x0B, 0x4E,0x45,0x54,0x53,0x43,0x41,0x50,0x45,0x32,0x2E,0x30, 0x03,0x01,0x00,0x00, 0x00);
-
-  for (let fi = 0; fi < picked.length; fi++) {
-    const frame = picked[fi];
-    // Resample to gif dimensions
-    rsctx.putImageData(frame.imageData, 0, 0);
-    rctx.clearRect(0, 0, gifW, aspectH);
-    rctx.drawImage(rSrc, 0, 0, gifW, aspectH);
-    const imgData = rctx.getImageData(0, 0, gifW, aspectH);
-
-    // Graphic Control Extension
-    bytes.push(0x21,0xF9,0x04, 0x00, ...le16(delayCs), 0x00, 0x00);
-    // Image Descriptor
-    bytes.push(0x2C, ...le16(0), ...le16(0), ...le16(gifW), ...le16(aspectH), 0x00);
-    // Image Data
-    bytes.push(0x08);
-    const indices = quantizeToIndices(imgData);
-    bytes.push(...gifSubBlocks(gifLzwEncode(indices)));
-
-    if (fi % 5 === 0) { onProgress && onProgress(fi / picked.length); await tick(); }
-  }
-  bytes.push(0x3B); // Trailer
-  return new Uint8Array(bytes);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -666,25 +514,35 @@ async function buildGif(allFrames, gifW, gifH, maxFrames, delayCs, onProgress) {
 // ══════════════════════════════════════════════════════════════════
 function selectSource(type) {
   S.source = type;
-  document.getElementById('btn-camera').classList.toggle('active', type === 'camera');
-  document.getElementById('btn-file').classList.toggle('active', type === 'file');
+  for (const k of ['camera', 'file']) {
+    document.getElementById(`btn-${k}`).classList.toggle('active', type === k);
+  }
   stopCapture();
-  type === 'camera' ? initCamera() : document.getElementById('file-input').click();
+  if (type === 'camera') initCamera();
+  else if (type === 'file') document.getElementById('file-input').click();
+}
+
+// Single entry point for putting a video into the preview + processing path.
+// `isObjUrl` means we created the URL and must revoke it when replaced.
+function setVideoSource(src, label, isObjUrl) {
+  if (S.objUrl) { URL.revokeObjectURL(S.objUrl); S.objUrl = null; }
+  if (isObjUrl) S.objUrl = src;
+  const vid = document.getElementById('preview-video');
+  vid.src = src;
+  vid.style.display = 'block';
+  document.getElementById('camera-video').style.display = 'none';
+  document.getElementById('preview-wrap').style.display = 'block';
+  document.getElementById('preview-label').textContent = label;
+  document.getElementById('btn-process').disabled = false;
+  document.getElementById('btn-capture').disabled = true;
+  document.getElementById('empty-state').style.display = 'none';
+  S.videoEl = vid;
 }
 
 document.getElementById('file-input').addEventListener('change', function () {
   const file = this.files[0];
   if (!file) return;
-  const vid = document.getElementById('preview-video');
-  vid.src = URL.createObjectURL(file);
-  vid.style.display = 'block';
-  document.getElementById('camera-video').style.display = 'none';
-  document.getElementById('preview-wrap').style.display = 'block';
-  document.getElementById('preview-label').textContent = 'VIDEO — ' + file.name;
-  document.getElementById('btn-process').disabled = false;
-  document.getElementById('btn-capture').disabled = true;
-  document.getElementById('empty-state').style.display = 'none';
-  S.videoEl = vid;
+  setVideoSource(URL.createObjectURL(file), 'VIDEO — ' + file.name, true);
   setStatus('FILE LOADED', 'live');
   log(`Loaded: ${file.name}`, 'ok');
   log('Ready to process', 'info');
@@ -693,9 +551,14 @@ document.getElementById('file-input').addEventListener('change', function () {
 // ══════════════════════════════════════════════════════════════════
 //  CAMERA
 // ══════════════════════════════════════════════════════════════════
+function stopStream() {
+  if (S.stream) { S.stream.getTracks().forEach(t => t.stop()); S.stream = null; }
+}
+
 async function initCamera() {
-  setStatus('REQUESTING…', '');
+  setStatus('REQUESTING', '');
   log('Requesting camera permission…', 'info');
+  stopStream();
   const constraints = [
     { video: { facingMode: { ideal: 'environment' } }, audio: false },
     { video: { facingMode: 'user' }, audio: false },
@@ -755,37 +618,50 @@ function stopCapture() {
 
 function onRecordingStop() {
   const blob = new Blob(S.recordedChunks, { type: 'video/webm' });
-  const vid = document.getElementById('preview-video');
-  vid.src = URL.createObjectURL(blob);
-  vid.style.display = 'block';
-  document.getElementById('camera-video').style.display = 'none';
-  document.getElementById('preview-label').textContent = 'RECORDED CLIP';
-  S.videoEl = vid;
-  document.getElementById('btn-process').disabled = false;
+  setVideoSource(URL.createObjectURL(blob), 'RECORDED CLIP', true);
   document.getElementById('btn-capture').disabled = false;
   setStatus('CLIP READY', 'live');
-  log(`Clip ready: ${(S.recordedChunks.reduce((a, c) => a + c.size, 0) / 1024).toFixed(0)}KB`, 'ok');
+  log(`Clip ready: ${(blob.size / 1024).toFixed(0)}KB`, 'ok');
 }
 
 // ══════════════════════════════════════════════════════════════════
 //  FRAME EXTRACTION + GRID ASSEMBLY
+//  Grids are built as frames arrive. Each frame's ImageData is
+//  drawn into its grid slot and then dropped, so memory no longer
+//  scales with the whole run.
 // ══════════════════════════════════════════════════════════════════
 async function processVideo() {
+  if (S.busy) return;
   const vid = S.videoEl;
   if (!vid || !vid.src) { log('No video source', 'warn'); return; }
 
-  const { fps, fw, fh, gc, gr, mg, mad } = S.params;
-  const framesPerGrid = gc * gr;
-  const dedupMode = document.getElementById('ctrl-dedup-mode').value;
-
-  document.getElementById('btn-process').disabled = true;
-  document.getElementById('empty-state').style.display = 'none';
-  setStatus('PROCESSING', '');
-
+  S.busy = true;
+  const btn = document.getElementById('btn-process');
   const bar = document.getElementById('progress-bar');
   const fill = document.getElementById('progress-fill');
+  btn.disabled = true;
   bar.style.display = 'block';
   fill.style.width = '0%';
+  setStatus('PROCESSING', '');
+  try {
+    await extractAndAssemble(vid, fill);
+  } catch (err) {
+    log(`Processing failed: ${err.message}`, 'warn');
+    console.error(err);
+    setStatus('ERROR', '');
+  } finally {
+    S.busy = false;
+    btn.disabled = false;
+    setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 800);
+  }
+}
+
+async function extractAndAssemble(vid, fill) {
+  const { fps, fw, fh, gc, gr, mg, mad } = S.params;
+  const framesPerGrid = gc * gr;
+  const gridW = gc * fw, gridH = gr * fh;
+  const dedupMode = document.getElementById('ctrl-dedup-mode').value;
+  const labelStyle = document.getElementById('ctrl-label-style').value;
 
   const modeLine = `${fps}fps · ${fw}×${fh}px · ${gc}×${gr}${S.etok ? ' · ◈ ElasticTOK' : ''}${S.dedup ? ` · dedup MAD≤${mad}` : ''}`;
   log(`Extracting: ${modeLine}`, 'info');
@@ -793,28 +669,38 @@ async function processVideo() {
   const duration = await resolveDuration(vid);
   if (!duration || !isFinite(duration)) {
     log('Cannot determine video duration', 'warn');
-    document.getElementById('btn-process').disabled = false;
-    bar.style.display = 'none';
     return;
   }
   log(`Duration: ${duration.toFixed(2)}s`, 'dim');
 
   const interval = 1 / fps;
   const totalPossible = Math.floor(duration * fps);
-  const maxFrames = framesPerGrid * mg;
-  const targetCount = Math.min(totalPossible, maxFrames);
-  const gridCount = Math.ceil(targetCount / framesPerGrid);
-  log(`Target: ${targetCount} frames → ${gridCount} grid(s)`, 'info');
+  const targetCount = Math.min(totalPossible, framesPerGrid * mg);
+  if (targetCount < 1) { log('Clip is shorter than one sample interval', 'warn'); return; }
+  log(`Target: ${targetCount} frames → up to ${Math.ceil(targetCount / framesPerGrid)} grid(s)`, 'info');
 
-  // Single reusable scratch canvas — no per-frame alloc
+  // Clear previous output and release its object URLs
+  const section = document.getElementById('grids-section');
+  section.querySelectorAll('.grid-card').forEach(card => {
+    (card._urls || []).forEach(u => URL.revokeObjectURL(u));
+    card.remove();
+  });
+  S.gridsOut = 0; S.totalFrames = 0;
+
+  // Two reusable canvases, sized once
   const proc = document.getElementById('proc-canvas');
   proc.width = fw; proc.height = fh;
-  const pctx = proc.getContext('2d');
+  const pctx = proc.getContext('2d', { willReadFrequently: true });
+  const scratch = document.getElementById('scratch-canvas');
+  scratch.width = fw; scratch.height = fh;
+  const sctx = scratch.getContext('2d');
 
-  // ── Extract frames ──────────────────────────────────────────────
-  const frames = [];
-  let dupCount = 0;
-  let lastKeptData = null;
+  const opts = { fw, fh, gc, fps, labelStyle, scratch, sctx };
+  const finalOpts = { gridW, gridH, etok: S.etok, framesPerGrid, section };
+
+  let grid = null, slot = 0, placed = 0, keptCount = 0, dupCount = 0;
+  let crSum = 0, crN = 0;
+  let lastKept = null;   // ImageData.data of the last kept frame (getImageData returns a fresh buffer, so no copy needed)
 
   for (let i = 0; i < targetCount; i++) {
     const t = i * interval;
@@ -822,217 +708,174 @@ async function processVideo() {
     pctx.drawImage(vid, 0, 0, fw, fh);
     const imgData = pctx.getImageData(0, 0, fw, fh);
 
-    // Deduplication check
     let isDup = false;
-    if (S.dedup && lastKeptData) {
-      const mad_ = frameMad(imgData.data, lastKeptData);
-      if (mad_ < mad) {
-        isDup = true; dupCount++;
-        if (dedupMode === 'skip') {
-          fill.style.width = `${Math.round(i / targetCount * 60)}%`;
-          if (i % 5 === 0) await tick();
-          continue;
-        }
-      }
+    if (S.dedup && lastKept) {
+      isDup = frameMad(imgData.data, lastKept) < mad;
     }
-    if (!isDup) lastKeptData = new Uint8ClampedArray(imgData.data);
+    if (isDup) {
+      dupCount++;
+      if (dedupMode === 'skip') {
+        fill.style.width = `${Math.round((i + 1) / targetCount * 100)}%`;
+        if (i % 5 === 0) await tick();
+        continue;               // skipped frames take no grid slot
+      }
+    } else {
+      lastKept = imgData.data;
+      keptCount++;
+    }
 
-    // ElasticTOK fingerprint
-    let etokResult = null;
-    if (S.etok) etokResult = elasticTok(imgData, fw, fh);
+    const etok = S.etok ? elasticTok(imgData, fw, fh) : null;
+    if (etok) { crSum += etok.cr; crN++; }
 
-    frames.push({ imageData: imgData, time: t, index: frames.length, isDup, etok: etokResult });
-    fill.style.width = `${Math.round(i / targetCount * 60)}%`;
+    if (!grid) grid = createGrid(Math.floor(placed / framesPerGrid) + 1, gridW, gridH, fw, fh);
+    drawFrame(grid, slot, { imageData: imgData, time: t, isDup, etok, globalIdx: placed }, opts);
+    grid.count++;
+    if (grid.t0 === null) grid.t0 = t;
+    grid.t1 = t;
+    slot++; placed++;
+
+    if (slot === framesPerGrid) {
+      finalizeGrid(grid, finalOpts);
+      grid = null; slot = 0;
+    }
+
+    fill.style.width = `${Math.round((i + 1) / targetCount * 100)}%`;
     if (i % 5 === 0) await tick();
   }
+  if (grid && grid.count > 0) finalizeGrid(grid, finalOpts);
 
-  log(`Extracted ${frames.length} frames${S.dedup ? ` (${dupCount} dup${dupCount!==1?'s':''} ${dedupMode==='skip'?'skipped':'marked'})` : ''}`, 'ok');
-  if (S.etok) {
-    const avgCr = (frames.reduce((a, f) => a + (f.etok?.cr ?? 0), 0) / frames.length).toFixed(2);
-    log(`◈ ROSA avg CR: ${avgCr}`, 'etok');
+  if (S.dedup) {
+    document.getElementById('stat-kept').textContent = keptCount;
+    document.getElementById('stat-duped').textContent = dupCount;
+    document.getElementById('stat-dedup-pct').textContent = targetCount ? Math.round(dupCount / targetCount * 100) + '%' : '—';
   }
-
-  // ── Clear old grids ─────────────────────────────────────────────
-  document.getElementById('grids-section').querySelectorAll('.grid-card').forEach(c => c.remove());
-  S.gridsOut = 0; S.totalFrames = 0; S.totalDups = dupCount;
-
-  const labelStyle = document.getElementById('ctrl-label-style').value;
-  const gridW = gc * fw, gridH = gr * fh;
-  const scratch = document.getElementById('scratch-canvas');
-
-  // ── Assemble grids ──────────────────────────────────────────────
-  const actualGridCount = Math.ceil(frames.length / framesPerGrid);
-
-  for (let g = 0; g < actualGridCount; g++) {
-    const gFrames = frames.slice(g * framesPerGrid, (g + 1) * framesPerGrid);
-
-    // Grid canvas
-    const gridCanvas = document.createElement('canvas');
-    gridCanvas.width = gridW; gridCanvas.height = gridH;
-    const ctx = gridCanvas.getContext('2d');
-    ctx.fillStyle = '#060809';
-    ctx.fillRect(0, 0, gridW, gridH);
-
-    // JSON manifest accumulator
-    const manifest = { tool: 'FrameGrid v2.0', grid: g + 1, frames: [] };
-
-    gFrames.forEach((frame, idx) => {
-      const col = idx % gc, row = Math.floor(idx / gc);
-      const x = col * fw, y = row * fh;
-
-      // Draw frame via scratch canvas (single reusable allocation)
-      scratch.width = fw; scratch.height = fh;
-      scratch.getContext('2d').putImageData(frame.imageData, 0, 0);
-      ctx.drawImage(scratch, x, y, fw, fh);
-
-      // Frame border — dim if duplicate
-      ctx.strokeStyle = frame.isDup ? 'rgba(248,113,113,0.3)' : 'rgba(30,45,61,0.8)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x + 0.5, y + 0.5, fw - 1, fh - 1);
-
-      // Label bar
-      const barH = Math.max(16, Math.round(fh * 0.1));
-      ctx.fillStyle = frame.isDup ? 'rgba(30,10,10,0.88)' : 'rgba(6,8,9,0.82)';
-      ctx.fillRect(x, y + fh - barH, fw, barH);
-
-      // Label text
-      const globalIdx = g * framesPerGrid + idx;
-      const label = buildLabel(globalIdx, frame.time, fps, labelStyle, frame.etok?.cr);
-      const dupSuffix = frame.isDup ? ' [DUP]' : '';
-      const fontSize = Math.max(8, Math.round(barH * 0.55));
-      ctx.font = `${fontSize}px ui-monospace, monospace`;
-      ctx.fillStyle = frame.isDup ? '#f87171' : '#00e5ff';
-      ctx.fillText(label + dupSuffix, x + 4, y + fh - Math.round(barH * 0.22));
-
-      // JSON manifest entry
-      if (S.etok && frame.etok) {
-        manifest.frames.push({
-          index: globalIdx, time: +frame.time.toFixed(3),
-          isDup: frame.isDup, cr: frame.etok.cr,
-          stateCount: frame.etok.stateCount,
-          packed: Array.from(frame.etok.packed),
-        });
-      }
-    });
-
-    // Grid outer border
-    ctx.strokeStyle = 'rgba(0,229,255,0.15)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(0.5, 0.5, gridW - 1, gridH - 1);
-
-    // Header bar
-    const hdrH = 20;
-    const hdrCanvas = document.createElement('canvas');
-    hdrCanvas.width = gridW; hdrCanvas.height = gridH + hdrH;
-    const hctx = hdrCanvas.getContext('2d');
-    hctx.fillStyle = '#060809';
-    hctx.fillRect(0, 0, gridW, hdrH);
-    hctx.font = 'bold 9px ui-monospace, monospace';
-    hctx.fillStyle = '#4a6070';
-    const t0 = gFrames[0]?.time.toFixed(2) ?? '—';
-    const t1 = gFrames[gFrames.length - 1]?.time.toFixed(2) ?? '—';
-    const etokTag = S.etok ? `  ◈ ElasticTOK` : '';
-    hctx.fillText(`GRID ${String(g+1).padStart(2,'0')} / ${actualGridCount}   FRAMES ${g*framesPerGrid+1}–${g*framesPerGrid+gFrames.length}   T: ${t0}s → ${t1}s   ${fw}×${fh}px  ${gc}×${gr}${etokTag}`, 8, 13);
-    hctx.drawImage(gridCanvas, 0, hdrH);
-
-    // Card
-    const card = document.createElement('div');
-    card.className = 'grid-card';
-
-    const hdr = document.createElement('div');
-    hdr.className = 'grid-card-header';
-    hdr.innerHTML = `<span>GRID ${String(g+1).padStart(2,'0')}</span><span style="color:var(--tdim)">${gFrames.length} frames · ${t0}s → ${t1}s</span>`;
-
-    const actions = document.createElement('div');
-    actions.className = 'grid-card-actions';
-
-    const dlPng = document.createElement('a');
-    dlPng.className = 'dl-btn';
-    dlPng.textContent = '↓ PNG';
-    dlPng.href = hdrCanvas.toDataURL('image/png');
-    dlPng.download = `framegrid_${String(g+1).padStart(2,'0')}_${Date.now()}.png`;
-    actions.appendChild(dlPng);
-
-    // JSON export — only when ElasticTOK enabled
-    if (S.etok && manifest.frames.length > 0) {
-      const jsonBlob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
-      const dlJson = document.createElement('a');
-      dlJson.className = 'dl-btn json';
-      dlJson.textContent = '↓ JSON';
-      dlJson.href = URL.createObjectURL(jsonBlob);
-      dlJson.download = `framegrid_${String(g+1).padStart(2,'0')}_manifest.json`;
-      actions.appendChild(dlJson);
-    }
-
-    hdr.appendChild(actions);
-
-    const displayCanvas = document.createElement('canvas');
-    displayCanvas.className = 'grid-canvas';
-    displayCanvas.width = hdrCanvas.width;
-    displayCanvas.height = hdrCanvas.height;
-    displayCanvas.getContext('2d').drawImage(hdrCanvas, 0, 0);
-
-    card.appendChild(hdr);
-    card.appendChild(displayCanvas);
-    document.getElementById('grids-section').appendChild(card);
-
-    S.gridsOut++;
-    S.totalFrames += gFrames.length;
-    document.getElementById('stat-grids-out').textContent = S.gridsOut;
-    document.getElementById('stat-total-frames').textContent = S.totalFrames;
-    if (S.dedup) {
-      const kept = frames.filter(f => !f.isDup).length;
-      const duped = frames.filter(f => f.isDup).length;
-      document.getElementById('stat-kept').textContent = kept;
-      document.getElementById('stat-duped').textContent = duped;
-      document.getElementById('stat-dedup-pct').textContent = frames.length ? Math.round(duped / frames.length * 100) + '%' : '—';
-    }
-
-    fill.style.width = `${Math.round(60 + (g / actualGridCount) * 40)}%`;
-    await tick();
-  }
+  log(`Extracted ${keptCount} frame${keptCount !== 1 ? 's' : ''}${S.dedup ? ` (${dupCount} dup${dupCount !== 1 ? 's' : ''} ${dedupMode === 'skip' ? 'skipped' : 'marked'})` : ''}`, 'ok');
+  if (S.etok && crN) log(`◈ ROSA avg CR: ${(crSum / crN).toFixed(2)}`, 'etok');
 
   fill.style.width = '100%';
-  setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 800);
-  document.getElementById('btn-process').disabled = false;
   setStatus('DONE', 'live');
   log(`Done — ${S.gridsOut} grid(s), ${S.totalFrames} frames`, 'ok');
+}
 
-  // ── GIF generation ─────────────────────────────────────────────
-  if (S.gif && frames.length > 0) {
-    const { gf, gw, gd } = S.params;
-    log(`Building GIF: ${Math.min(frames.length, gf)} frames @ ${gw}px…`, 'ok');
-    setStatus('ENCODING GIF', '');
-    bar.style.display = 'block'; fill.style.width = '0%';
+function createGrid(no, gridW, gridH, fw, fh) {
+  const canvas = document.createElement('canvas');
+  canvas.width = gridW; canvas.height = gridH;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#060809';
+  ctx.fillRect(0, 0, gridW, gridH);
+  return { no, canvas, ctx, count: 0, t0: null, t1: null,
+           manifest: { tool: 'FrameGrid v2.1', grid: no, frames: [] } };
+}
 
-    const gifData = await buildGif(frames, gw, gw, gf, gd, pct => {
-      fill.style.width = `${Math.round(pct * 100)}%`;
+function drawFrame(grid, slot, frame, o) {
+  const { fw, fh, gc, fps, labelStyle, scratch, sctx } = o;
+  const col = slot % gc, row = Math.floor(slot / gc);
+  const x = col * fw, y = row * fh;
+
+  sctx.putImageData(frame.imageData, 0, 0);
+  grid.ctx.drawImage(scratch, x, y, fw, fh);
+
+  // Frame border — red if duplicate (mark mode)
+  grid.ctx.strokeStyle = frame.isDup ? 'rgba(248,113,113,0.3)' : 'rgba(30,45,61,0.8)';
+  grid.ctx.lineWidth = 1;
+  grid.ctx.strokeRect(x + 0.5, y + 0.5, fw - 1, fh - 1);
+
+  // Label bar
+  const barH = Math.max(16, Math.round(fh * 0.1));
+  grid.ctx.fillStyle = frame.isDup ? 'rgba(30,10,10,0.88)' : 'rgba(6,8,9,0.82)';
+  grid.ctx.fillRect(x, y + fh - barH, fw, barH);
+
+  const label = buildLabel(frame.globalIdx, frame.time, fps, labelStyle, frame.etok?.cr);
+  const dupSuffix = frame.isDup ? ' [DUP]' : '';
+  const fontSize = Math.max(8, Math.round(barH * 0.55));
+  grid.ctx.font = `${fontSize}px ui-monospace, monospace`;
+  grid.ctx.fillStyle = frame.isDup ? '#f87171' : '#00e5ff';
+  grid.ctx.fillText(label + dupSuffix, x + 4, y + fh - Math.round(barH * 0.22));
+
+  if (frame.etok) {
+    grid.manifest.frames.push({
+      index: frame.globalIdx, time: +frame.time.toFixed(3),
+      isDup: frame.isDup, cr: frame.etok.cr,
+      stateCount: frame.etok.stateCount,
+      packed: Array.from(frame.etok.packed),
     });
-
-    fill.style.width = '100%';
-    setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 600);
-
-    const blob = new Blob([gifData], { type: 'image/gif' });
-    const sizeMB = (blob.size / 1048576).toFixed(2);
-    log(`GIF ready: ${sizeMB}MB`, 'ok');
-
-    // Insert download button at top of grids section
-    const existing = document.getElementById('gif-download-bar');
-    if (existing) existing.remove();
-    const bar2 = document.createElement('div');
-    bar2.id = 'gif-download-bar';
-    bar2.style.cssText = 'display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--bg-1);border:1px solid var(--ok);border-radius:var(--r);font-family:var(--font-mono);font-size:10px;color:var(--ok);';
-    bar2.innerHTML = `<span>⬡ ANIMATED GIF</span><span style="color:var(--tdim)">${Math.min(frames.length, gf)} frames · ${gw}px · ${sizeMB}MB</span>`;
-    const dlGif = document.createElement('a');
-    dlGif.className = 'dl-btn';
-    dlGif.style.cssText = 'border-color:var(--ok);color:var(--ok);margin-left:auto';
-    dlGif.textContent = '↓ DOWNLOAD GIF';
-    dlGif.href = URL.createObjectURL(blob);
-    dlGif.download = `framegrid_${Date.now()}.gif`;
-    bar2.appendChild(dlGif);
-    document.getElementById('grids-section').prepend(bar2);
-    setStatus('DONE', 'live');
   }
+}
+
+function finalizeGrid(grid, o) {
+  const { gridW, gridH, etok, section } = o;
+  const hdrH = 20;
+  const outer = grid.ctx;
+  outer.strokeStyle = 'rgba(0,229,255,0.15)';
+  outer.lineWidth = 1;
+  outer.strokeRect(0.5, 0.5, gridW - 1, gridH - 1);
+
+  // Header bar composited above the grid
+  const hdrCanvas = document.createElement('canvas');
+  hdrCanvas.width = gridW; hdrCanvas.height = gridH + hdrH;
+  const hctx = hdrCanvas.getContext('2d');
+  hctx.fillStyle = '#060809';
+  hctx.fillRect(0, 0, gridW, hdrH);
+  hctx.font = 'bold 9px ui-monospace, monospace';
+  hctx.fillStyle = '#4a6070';
+  const t0 = grid.t0 != null ? grid.t0.toFixed(2) : '—';
+  const t1 = grid.t1 != null ? grid.t1.toFixed(2) : '—';
+  const firstFrame = (grid.no - 1) * o.framesPerGrid + 1;
+  const lastFrame = firstFrame + grid.count - 1;
+  const etokTag = etok ? '  ◈ ElasticTOK' : '';
+  hctx.fillText(`GRID ${String(grid.no).padStart(2, '0')}   FRAMES ${firstFrame}–${lastFrame}   T: ${t0}s → ${t1}s${etokTag}`, 8, 13);
+  hctx.drawImage(grid.canvas, 0, hdrH);
+
+  // Card
+  const card = document.createElement('div');
+  card.className = 'grid-card';
+  card._urls = [];
+
+  const hdr = document.createElement('div');
+  hdr.className = 'grid-card-header';
+  const titleSpan = document.createElement('span');
+  titleSpan.textContent = `GRID ${String(grid.no).padStart(2, '0')}`;
+  const infoSpan = document.createElement('span');
+  infoSpan.style.color = 'var(--tdim)';
+  infoSpan.textContent = `${grid.count} frames · ${t0}s → ${t1}s`;
+  hdr.append(titleSpan, infoSpan);
+
+  const actions = document.createElement('div');
+  actions.className = 'grid-card-actions';
+
+  const dlPng = document.createElement('a');
+  dlPng.className = 'dl-btn';
+  dlPng.textContent = '↓ PNG';
+  dlPng.download = `framegrid_${String(grid.no).padStart(2, '0')}_${Date.now()}.png`;
+  hdrCanvas.toBlob(blob => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    card._urls.push(url);
+    dlPng.href = url;
+  }, 'image/png');
+  actions.appendChild(dlPng);
+
+  if (etok && grid.manifest.frames.length > 0) {
+    const jsonBlob = new Blob([JSON.stringify(grid.manifest, null, 2)], { type: 'application/json' });
+    const jsonUrl = URL.createObjectURL(jsonBlob);
+    card._urls.push(jsonUrl);
+    const dlJson = document.createElement('a');
+    dlJson.className = 'dl-btn json';
+    dlJson.textContent = '↓ JSON';
+    dlJson.href = jsonUrl;
+    dlJson.download = `framegrid_${String(grid.no).padStart(2, '0')}_manifest.json`;
+    actions.appendChild(dlJson);
+  }
+
+  hdr.appendChild(actions);
+  hdrCanvas.className = 'grid-canvas';
+  card.append(hdr, hdrCanvas);
+  section.appendChild(card);
+
+  S.gridsOut++;
+  S.totalFrames += grid.count;
+  document.getElementById('stat-grids-out').textContent = S.gridsOut;
+  document.getElementById('stat-total-frames').textContent = S.totalFrames;
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1049,17 +892,17 @@ function buildLabel(idx, time, fps, style, cr) {
 // Mobile Chrome WebM blob duration=Infinity fix (v1.3, Ed Interim)
 function resolveDuration(vid) {
   return new Promise(resolve => {
-    if (vid.readyState >= 1 && isFinite(vid.duration) && vid.duration > 0) {
-      resolve(vid.duration); return;
-    }
+    let settled = false;
+    const done = v => { if (!settled) { settled = true; resolve(v); } };
+    if (vid.readyState >= 1 && isFinite(vid.duration) && vid.duration > 0) { done(vid.duration); return; }
     const afterMeta = () => {
-      if (isFinite(vid.duration) && vid.duration > 0) { resolve(vid.duration); return; }
+      if (isFinite(vid.duration) && vid.duration > 0) { done(vid.duration); return; }
       log('Duration Infinity — seeking to probe end…', 'dim');
       const onDurationChange = () => {
         if (isFinite(vid.duration) && vid.duration > 0) {
           vid.removeEventListener('durationchange', onDurationChange);
           vid.currentTime = 0;
-          vid.addEventListener('seeked', () => resolve(vid.duration), { once: true });
+          vid.addEventListener('seeked', () => done(vid.duration), { once: true });
         }
       };
       vid.addEventListener('durationchange', onDurationChange);
@@ -1067,14 +910,24 @@ function resolveDuration(vid) {
     };
     if (vid.readyState >= 1) afterMeta();
     else { vid.addEventListener('loadedmetadata', afterMeta, { once: true }); vid.load(); }
-    setTimeout(() => { const d = vid.duration; resolve(isFinite(d) && d > 0 ? d : null); }, 8000);
+    setTimeout(() => { const d = vid.duration; done(isFinite(d) && d > 0 ? d : null); }, 8000);
   });
 }
 
+// Resolves once the video is showing time t. Resolves immediately if it
+// is already there (no 'seeked' fires for a no-op seek), and times out
+// rather than hanging if the browser never fires 'seeked'.
 function seekTo(vid, t) {
   return new Promise(resolve => {
-    const fn = () => { vid.removeEventListener('seeked', fn); resolve(); };
-    vid.addEventListener('seeked', fn);
+    if (Math.abs(vid.currentTime - t) < 0.001 && vid.readyState >= 2) { resolve(); return; }
+    let timer = null;
+    const finish = () => {
+      vid.removeEventListener('seeked', finish);
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(finish, 2000);
+    vid.addEventListener('seeked', finish);
     vid.currentTime = t;
   });
 }
