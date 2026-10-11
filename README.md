@@ -155,3 +155,12 @@ Video source (camera / file)
 ## License
 
 MIT — ConsciousNode SoftWorks
+
+---
+
+## Changelog
+
+### 2026-10-11 · Kehai Interim
+- **`frame-grid-v2.1.html` (the GIF build) now runs.** A splice had dropped the line `function toggleETok(on) {`, so the whole script failed to parse and the GIF encoder had never run in a browser. Restored.
+- **GIF frame sub-sampling fixed.** The loop skipped frame 1 every time (6 frames in gave 5 out). Verified: the output decodes as GIF89a with the correct frame count and colours.
+- Note: `index.html` is the Oct 8 build (safer text-only logging, no GIF export). The GIF build is a separate page; merging the two is a choice for later.

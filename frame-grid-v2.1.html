@@ -429,6 +429,7 @@ function toggleGif(on) {
   document.getElementById('gif-controls').style.display = on ? '' : 'none';
   if (on) log(`GIF export enabled — max ${S.params.gf} frames, ${S.params.gw}px wide`, 'ok');
 }
+function toggleETok(on) {
   S.etok = on;
   document.getElementById('etok-state').textContent = on ? 'ON' : 'OFF';
   document.getElementById('etok-chip').style.display = on ? '' : 'none';
@@ -615,8 +616,10 @@ async function buildGif(allFrames, gifW, gifH, maxFrames, delayCs, onProgress) {
   // Sub-sample frames evenly
   const step = allFrames.length <= maxFrames ? 1 : allFrames.length / maxFrames;
   const picked = [];
-  for (let i = 0; i < allFrames.length && picked.length < maxFrames; i = Math.floor((picked.length + 1) * step))
-    picked.push(allFrames[Math.min(Math.floor(i), allFrames.length - 1)]);
+  // (fixed 2026-10-11: the old loop advanced to (n+1)·step after the first push, always skipping frame 1)
+  const count = Math.min(maxFrames, allFrames.length);
+  for (let k = 0; k < count; k++)
+    picked.push(allFrames[Math.min(Math.floor(k * step), allFrames.length - 1)]);
 
   const aspectH = Math.round(gifH * gifW / allFrames[0].imageData.width);
 
