@@ -3,15 +3,39 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Frame Grid v2.1 — ConsciousNode SoftWorks</title>
+<title>Frame Grid v2.3 — ConsciousNode SoftWorks</title>
 <!--
-  Frame Grid v2.1
+  Frame Grid v2.2
   ConsciousNode SoftWorks
 
   Contact-sheet composite generator + ElasticTOK frame fingerprinting.
-  Camera or uploaded video → sampled frames →
+  Camera, uploaded video, or GIF → sampled frames →
   ROSA-fingerprinted labeled grid → downloadable PNG + JSON manifest.
   Single file, offline, no external dependencies.
+
+  v2.2 — Komorebi Interim
+    Add: GIF ingestion pipeline — pure-JS GIF89a decoder with full
+         LZW decompression, interlace support, and per-frame compositing
+         respecting all three disposal methods (leave, restore-background,
+         restore-previous). GIF frames feed directly into the existing
+         grid assembly, dedup, and ElasticTOK pipeline.
+    Add: GIF source button + animated preview via <img> element.
+    Add: processSource() router (video vs GIF) on the PROCESS button.
+    Fix: PROCESS button label updated to "PROCESS" (source-agnostic).
+    Fix: version string in createGrid manifest updated to v2.2.
+
+  v2.3 — Komorebi Interim
+    Fix: LZW code-size growth check was off by one (> codeMask+1 → > codeMask).
+         This caused the decoder to read 9-bit codes when the stream was already
+         emitting 10-bit codes, producing garbage indices that hit the bounds check
+         and silently rendered every frame black. This was the root cause of the
+         all-black grid output across all v2.2.x builds.
+    Add: ImageDecoder API path (Chrome 94+, Safari 17+, Firefox 113+) as primary
+         GIF decoder. Uses native browser GIF support — correct compositing,
+         disposal methods, interlace, all edge cases handled automatically.
+         Pure-JS decoder now serves only as fallback for older browsers.
+    Upd: gifDecode() detects ImageDecoder availability and routes accordingly.
+    Upd: version string in logo and manifest.
 
   v2.1 — debug pass
     Fix: dedup stats were wrong in skip mode (duped always 0).
@@ -197,7 +221,7 @@ input[type=file] { display: none; }
 <header>
   <div>
     <div class="logo">FRAME GRID</div>
-    <div class="logo-sub">CONSCIOUSNODE SOFTWORKS — v2.1</div>
+    <div class="logo-sub">CONSCIOUSNODE SOFTWORKS — v2.3</div>
   </div>
   <div class="header-right">
     <div class="chip etok" id="etok-chip" style="display:none">◈ ELASTICTOK</div>
@@ -218,8 +242,12 @@ input[type=file] { display: none; }
       <button class="src-btn" id="btn-file" onclick="selectSource('file')">
         <span class="src-icon">🎬</span>upload
       </button>
+      <button class="src-btn" id="btn-gif" onclick="selectSource('gif')">
+        <span class="src-icon">🌀</span>gif
+      </button>
     </div>
     <input type="file" id="file-input" accept="video/*">
+    <input type="file" id="gif-input" accept=".gif,image/gif">
   </div>
 
   <!-- Parameters -->
@@ -301,7 +329,7 @@ input[type=file] { display: none; }
     <div class="panel-title">Actions</div>
     <button class="action-btn" id="btn-capture" onclick="startCapture()" disabled>▶ CAPTURE</button>
     <button class="action-btn" id="btn-stop" onclick="stopCapture()" disabled style="margin-top:8px;background:rgba(239,68,68,0.1);border-color:#ef4444;color:#ef4444">■ STOP</button>
-    <button class="action-btn secondary" id="btn-process" onclick="processVideo()" disabled>⬡ PROCESS VIDEO</button>
+    <button class="action-btn secondary" id="btn-process" onclick="processSource()" disabled>⬡ PROCESS</button>
     <div class="progress-bar" id="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
   </div>
 
@@ -330,6 +358,7 @@ input[type=file] { display: none; }
     <div class="preview-label" id="preview-label">PREVIEW</div>
     <video id="camera-video" autoplay muted playsinline></video>
     <video id="preview-video" controls></video>
+    <img id="preview-gif" style="display:none;width:100%;max-height:240px;object-fit:contain;background:#000" alt="GIF preview">
   </div>
 
   <div class="grids-section" id="grids-section">
@@ -359,6 +388,8 @@ const S = {
   params: { fps: 3, fw: 256, fh: 192, gc: 5, gr: 4, mg: 20, mad: 8 },
   etok: false, dedup: false, busy: false,
   gridsOut: 0, totalFrames: 0,
+  gifData: null,  // decoded GIF: { frames, width, height, duration }
+  gifObjUrl: null,
 };
 
 // ══════════════════════════════════════════════════════════════════
@@ -514,12 +545,13 @@ function frameMad(a, b) {
 // ══════════════════════════════════════════════════════════════════
 function selectSource(type) {
   S.source = type;
-  for (const k of ['camera', 'file']) {
+  for (const k of ['camera', 'file', 'gif']) {
     document.getElementById(`btn-${k}`).classList.toggle('active', type === k);
   }
   stopCapture();
   if (type === 'camera') initCamera();
   else if (type === 'file') document.getElementById('file-input').click();
+  else if (type === 'gif') document.getElementById('gif-input').click();
 }
 
 // Single entry point for putting a video into the preview + processing path.
@@ -546,6 +578,39 @@ document.getElementById('file-input').addEventListener('change', function () {
   setStatus('FILE LOADED', 'live');
   log(`Loaded: ${file.name}`, 'ok');
   log('Ready to process', 'info');
+});
+
+document.getElementById('gif-input').addEventListener('change', async function () {
+  const file = this.files[0];
+  if (!file) return;
+  setStatus('DECODING GIF', '');
+  log(`Loading GIF: ${file.name}`, 'info');
+  // Revoke old object URL if any
+  if (S.gifObjUrl) { URL.revokeObjectURL(S.gifObjUrl); S.gifObjUrl = null; }
+  // Animated preview via <img>
+  const objUrl = URL.createObjectURL(file);
+  S.gifObjUrl = objUrl;
+  const imgEl = document.getElementById('preview-gif');
+  imgEl.src = objUrl;
+  imgEl.style.display = 'block';
+  document.getElementById('preview-video').style.display = 'none';
+  document.getElementById('camera-video').style.display = 'none';
+  document.getElementById('preview-wrap').style.display = 'block';
+  document.getElementById('preview-label').textContent = 'GIF — ' + file.name;
+  document.getElementById('empty-state').style.display = 'none';
+  // Decode
+  try {
+    const buf = await file.arrayBuffer();
+    S.gifData = await gifDecode(buf);
+    log(`Decoded: ${S.gifData.frames.length} frames · ${S.gifData.width}×${S.gifData.height}px · ${S.gifData.duration.toFixed(2)}s`, 'ok');
+    log('Ready to process', 'info');
+    document.getElementById('btn-process').disabled = false;
+    document.getElementById('btn-capture').disabled = true;
+    setStatus('GIF LOADED', 'live');
+  } catch (e) {
+    log(`GIF decode failed: ${e.message}`, 'warn');
+    setStatus('DECODE ERROR', '');
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -630,6 +695,11 @@ function onRecordingStop() {
 //  drawn into its grid slot and then dropped, so memory no longer
 //  scales with the whole run.
 // ══════════════════════════════════════════════════════════════════
+async function processSource() {
+  if (S.source === 'gif') await processGif();
+  else await processVideo();
+}
+
 async function processVideo() {
   if (S.busy) return;
   const vid = S.videoEl;
@@ -764,7 +834,7 @@ function createGrid(no, gridW, gridH, fw, fh) {
   ctx.fillStyle = '#060809';
   ctx.fillRect(0, 0, gridW, gridH);
   return { no, canvas, ctx, count: 0, t0: null, t1: null,
-           manifest: { tool: 'FrameGrid v2.1', grid: no, frames: [] } };
+           manifest: { tool: 'FrameGrid v2.3', grid: no, frames: [] } };
 }
 
 function drawFrame(grid, slot, frame, o) {
@@ -876,6 +946,434 @@ function finalizeGrid(grid, o) {
   S.totalFrames += grid.count;
   document.getElementById('stat-grids-out').textContent = S.gridsOut;
   document.getElementById('stat-total-frames').textContent = S.totalFrames;
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  GIF PIPELINE
+//  Primary: ImageDecoder API (Chrome 94+, Safari 17+, Firefox 113+).
+//  Fallback: pure-JS GIF89a decoder with LZW decompression.
+//  gifDecode() routes automatically.
+//  processGif — feeds decoded frames into the existing grid assembly.
+// ══════════════════════════════════════════════════════════════════
+
+// ── ImageDecoder path (primary) ──────────────────────────────────
+async function gifDecodeNative(buf) {
+  const decoder = new ImageDecoder({ data: buf, type: 'image/gif' });
+  await decoder.completed;
+  const track      = decoder.tracks.selectedTrack;
+  const frameCount = track.frameCount;
+  if (!frameCount) throw new Error('No frames decoded');
+
+  // Decode first frame to get display dimensions
+  const first = (await decoder.decode({ frameIndex: 0 })).image;
+  const width  = first.displayWidth;
+  const height = first.displayHeight;
+
+  const tmp  = document.createElement('canvas');
+  tmp.width  = width; tmp.height = height;
+  const tctx = tmp.getContext('2d', { willReadFrequently: true });
+
+  const frames = [];
+  let cumTime  = 0;
+
+  // Process all frames
+  for (let i = 0; i < frameCount; i++) {
+    const vf = i === 0 ? first : (await decoder.decode({ frameIndex: i })).image;
+    tctx.clearRect(0, 0, width, height);
+    tctx.drawImage(vf, 0, 0);
+    const delayS = (vf.duration || 100000) / 1_000_000; // µs → s
+    frames.push({ imageData: tctx.getImageData(0, 0, width, height), time: cumTime, delay: delayS });
+    cumTime += delayS;
+    vf.close();
+  }
+
+  decoder.close();
+  return { frames, width, height, duration: cumTime };
+}
+
+// ── Pure-JS path (fallback) ───────────────────────────────────────
+function gifLZW(minCS, data) {
+  // LZW minimum code size must be at least 2
+  minCS = Math.max(2, minCS);
+  const clearCode = 1 << minCS;
+  const eoiCode   = clearCode + 1;
+  let codeSize    = minCS + 1;
+  let codeMask    = (1 << codeSize) - 1;
+
+  // Dictionary: array-of-arrays for clarity and correctness
+  const dict = [];
+  function initDict() {
+    dict.length = 0;
+    for (let i = 0; i < clearCode; i++) dict.push(new Uint8Array([i]));
+    dict.push(new Uint8Array(0)); // clearCode placeholder
+    dict.push(new Uint8Array(0)); // eoiCode placeholder
+    codeSize = minCS + 1;
+    codeMask = (1 << codeSize) - 1;
+  }
+  initDict();
+
+  // Bit-stream reader
+  let bitBuf = 0, bitCnt = 0, bPos = 0;
+  function readCode() {
+    while (bitCnt < codeSize && bPos < data.length) {
+      bitBuf |= data[bPos++] << bitCnt;
+      bitCnt += 8;
+    }
+    const code = bitBuf & codeMask;
+    bitBuf >>>= codeSize;
+    bitCnt  -= codeSize;
+    return code;
+  }
+
+  const out = [];
+  let prev = null;
+
+  while (true) {
+    const code = readCode();
+    if (code === eoiCode || (bPos >= data.length && bitCnt <= 0)) break;
+    if (code === clearCode) { initDict(); prev = null; continue; }
+
+    let entry;
+    if (code < dict.length) {
+      entry = dict[code];
+    } else if (code === dict.length && prev !== null) {
+      // Special case: code not yet in dict — entry is prev + prev[0]
+      const ext = new Uint8Array(prev.length + 1);
+      ext.set(prev); ext[prev.length] = prev[0];
+      entry = ext;
+    } else {
+      break; // corrupted stream
+    }
+
+    for (let i = 0; i < entry.length; i++) out.push(entry[i]);
+
+    if (prev !== null && dict.length < 4096) {
+      const ne = new Uint8Array(prev.length + 1);
+      ne.set(prev); ne[prev.length] = entry[0];
+      dict.push(ne);
+      // Grow code size when dict fills current mask
+      if (dict.length > codeMask && codeSize < 12) {
+        codeSize++;
+        codeMask = (1 << codeSize) - 1;
+      }
+    }
+    prev = entry;
+  }
+  return out;
+}
+
+// gifDecode: async wrapper that tries native first, falls back to pure-JS
+async function gifDecode(buf) {
+  if (typeof ImageDecoder !== 'undefined') {
+    try {
+      log('Using native ImageDecoder', 'dim');
+      return await gifDecodeNative(buf);
+    } catch (e) {
+      log(`Native decoder failed (${e.message}), falling back to pure-JS`, 'warn');
+    }
+  } else {
+    log('ImageDecoder unavailable — using pure-JS fallback', 'dim');
+  }
+  return gifDecodePureJS(buf);
+}
+
+function gifDecodePureJS(buf) {
+  const u8  = new Uint8Array(buf);
+  let   pos = 0;
+
+  const sig = String.fromCharCode(u8[0], u8[1], u8[2], u8[3], u8[4], u8[5]);
+  if (!sig.startsWith('GIF')) throw new Error('Not a valid GIF');
+  pos = 6;
+
+  // Logical Screen Descriptor
+  const lsw      = u8[pos] | (u8[pos+1] << 8); pos += 2;
+  const lsh      = u8[pos] | (u8[pos+1] << 8); pos += 2;
+  const lsPacked  = u8[pos++];
+  const bgIdx     = u8[pos++];
+  pos++; // pixel aspect ratio
+
+  let globalCT = null;
+  if (lsPacked & 0x80) {
+    const n = 3 * (2 << (lsPacked & 0x7));
+    globalCT = u8.slice(pos, pos + n); pos += n;
+  }
+
+  // Sub-block reader — GIF data comes in length-prefixed sub-blocks
+  function readSubBlocks() {
+    const bytes = [];
+    let bLen;
+    while ((bLen = u8[pos++]) !== 0) {
+      for (let i = 0; i < bLen; i++) bytes.push(u8[pos++]);
+    }
+    return bytes;
+  }
+
+  // Compositing canvas (off-DOM, reused across frames)
+  const compCanvas = document.createElement('canvas');
+  compCanvas.width = lsw; compCanvas.height = lsh;
+  const compCtx = compCanvas.getContext('2d', { willReadFrequently: true });
+  // Fill with app background
+  compCtx.fillStyle = '#060809';
+  compCtx.fillRect(0, 0, lsw, lsh);
+
+  const frames = [];
+  // Default GCE values
+  let gce = { delay: 10, transparentIdx: -1, disposal: 0 };
+  let prevCompSnap = null; // saved ImageData for disposal method 3
+  let cumTime = 0;
+
+  while (pos < u8.length) {
+    const introducer = u8[pos++];
+    if (introducer === 0x3B) break; // GIF Trailer
+
+    if (introducer === 0x21) {
+      // Extension block
+      const label = u8[pos++];
+      if (label === 0xF9) {
+        // Graphic Control Extension
+        pos++; // block size (always 4)
+        const p         = u8[pos++];
+        gce.disposal    = (p >> 2) & 0x7;
+        const hasTrans  = p & 0x1;
+        gce.delay       = u8[pos] | (u8[pos+1] << 8); pos += 2;
+        gce.transparentIdx = hasTrans ? u8[pos++] : -1;
+        if (!hasTrans) pos++; // skip transparent index byte
+        pos++; // block terminator
+      } else {
+        // Skip any other extension (comment, plain text, application)
+        readSubBlocks();
+      }
+      continue;
+    }
+
+    if (introducer === 0x2C) {
+      // Image Descriptor
+      const left      = u8[pos] | (u8[pos+1] << 8); pos += 2;
+      const top       = u8[pos] | (u8[pos+1] << 8); pos += 2;
+      const iw        = u8[pos] | (u8[pos+1] << 8); pos += 2;
+      const ih        = u8[pos] | (u8[pos+1] << 8); pos += 2;
+      const iPacked   = u8[pos++];
+      const hasLCT    = iPacked & 0x80;
+      const interlaced = !!(iPacked & 0x40);
+
+      let colorTable = globalCT;
+      if (hasLCT) {
+        const n = 3 * (2 << (iPacked & 0x7));
+        colorTable = u8.slice(pos, pos + n); pos += n;
+      }
+
+      // Read image data sub-blocks
+      const minCS    = u8[pos++];
+      const rawBytes = readSubBlocks();
+
+      // Decode LZW → flat array of color-table indices
+      const indices = gifLZW(minCS, rawBytes);
+
+      // --- Disposal: apply BEFORE drawing the new frame ---
+      if (gce.disposal === 3 && prevCompSnap) {
+        compCtx.putImageData(prevCompSnap, 0, 0);
+      } else if (gce.disposal === 2) {
+        compCtx.clearRect(left, top, iw, ih);
+        compCtx.fillStyle = '#060809';
+        compCtx.fillRect(left, top, iw, ih);
+      }
+      // Save snapshot for disposal=3 on the NEXT frame
+      if (gce.disposal === 3) {
+        prevCompSnap = compCtx.getImageData(0, 0, lsw, lsh);
+      } else {
+        prevCompSnap = null;
+      }
+
+      // Draw frame pixels onto composite canvas
+      const patch = compCtx.getImageData(left, top, iw, ih);
+      const pd    = patch.data;
+      const transpIdx = gce.transparentIdx;
+
+      // Deinterlace if needed
+      let rowOrder;
+      if (interlaced) {
+        rowOrder = new Array(ih);
+        const passes = [
+          { start: 0, step: 8 },
+          { start: 4, step: 8 },
+          { start: 2, step: 4 },
+          { start: 1, step: 2 },
+        ];
+        let src = 0;
+        for (const { start, step } of passes) {
+          for (let y = start; y < ih; y += step) {
+            rowOrder[y] = src * iw;
+            src++;
+          }
+        }
+      } else {
+        rowOrder = null; // sequential
+      }
+
+      for (let y = 0; y < ih; y++) {
+        const srcRow = rowOrder ? rowOrder[y] : y * iw;
+        for (let x = 0; x < iw; x++) {
+          const idx = indices[srcRow + x];
+          if (idx === transpIdx) continue; // transparent: leave composite as-is
+          const ci = idx * 3;
+          const pi = (y * iw + x) * 4;
+          pd[pi]     = colorTable[ci];
+          pd[pi + 1] = colorTable[ci + 1];
+          pd[pi + 2] = colorTable[ci + 2];
+          pd[pi + 3] = 255;
+        }
+      }
+      compCtx.putImageData(patch, left, top);
+
+      // Snapshot the full composited frame
+      const snap = compCtx.getImageData(0, 0, lsw, lsh);
+      const delayS = (gce.delay || 10) / 100; // centiseconds → seconds
+      frames.push({ imageData: snap, time: cumTime, delay: delayS });
+      cumTime += delayS;
+
+      // Reset GCE defaults for next frame
+      gce = { delay: 10, transparentIdx: -1, disposal: 0 };
+      continue;
+    }
+
+    // Unknown block — stop parsing
+    log(`Unknown GIF block 0x${introducer.toString(16).toUpperCase()} at byte ${pos-1}`, 'warn');
+    break;
+  }
+
+  return { frames, width: lsw, height: lsh, duration: cumTime };
+} // end gifDecodePureJS
+
+async function processGif() {
+  if (S.busy) return;
+  if (!S.gifData || S.gifData.frames.length === 0) {
+    log('No GIF loaded', 'warn'); return;
+  }
+
+  S.busy = true;
+  const btn  = document.getElementById('btn-process');
+  const bar  = document.getElementById('progress-bar');
+  const fill = document.getElementById('progress-fill');
+  btn.disabled = true;
+  bar.style.display = 'block';
+  fill.style.width = '0%';
+  setStatus('PROCESSING', '');
+
+  try {
+    const { frames, width, height } = S.gifData;
+    const { fw, fh, gc, gr, mg, mad } = S.params;
+    const framesPerGrid = gc * gr;
+    const gridW = gc * fw, gridH = gr * fh;
+    const dedupMode  = document.getElementById('ctrl-dedup-mode').value;
+    const labelStyle = document.getElementById('ctrl-label-style').value;
+    const maxFrames  = framesPerGrid * mg;
+
+    log(`GIF: ${frames.length} frames · ${width}×${height}px · ${S.gifData.duration.toFixed(2)}s`, 'info');
+    if (S.dedup) log(`Dedup enabled — MAD threshold: ${mad}`, 'info');
+
+    // Clear previous output
+    const section = document.getElementById('grids-section');
+    section.querySelectorAll('.grid-card').forEach(card => {
+      (card._urls || []).forEach(u => URL.revokeObjectURL(u));
+      card.remove();
+    });
+    S.gridsOut = 0; S.totalFrames = 0;
+
+    // Reusable canvases for drawing frames
+    const proc    = document.getElementById('proc-canvas');
+    proc.width = fw; proc.height = fh;
+    const pctx = proc.getContext('2d', { willReadFrequently: true });
+    const scratch = document.getElementById('scratch-canvas');
+    scratch.width = fw; scratch.height = fh;
+    const sctx = scratch.getContext('2d');
+
+    // Temp canvas for scaling GIF frame to target size
+    const srcCanvas = document.createElement('canvas');
+    srcCanvas.width = width; srcCanvas.height = height;
+    const srcCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
+
+    const opts      = { fw, fh, gc, fps: null, labelStyle, scratch, sctx };
+    const finalOpts = { gridW, gridH, etok: S.etok, framesPerGrid, section };
+
+    let grid = null, slot = 0, placed = 0, keptCount = 0, dupCount = 0;
+    let crSum = 0, crN = 0;
+    let lastKept = null;
+
+    const total = Math.min(frames.length, maxFrames);
+    for (let i = 0; i < total; i++) {
+      const frame = frames[i];
+
+      // Scale GIF frame to target thumbnail size
+      srcCtx.putImageData(frame.imageData, 0, 0);
+      pctx.drawImage(srcCanvas, 0, 0, fw, fh);
+      const imgData = pctx.getImageData(0, 0, fw, fh);
+
+      let isDup = false;
+      if (S.dedup && lastKept) {
+        isDup = frameMad(imgData.data, lastKept) < mad;
+      }
+      if (isDup) {
+        dupCount++;
+        if (dedupMode === 'skip') {
+          fill.style.width = `${Math.round((i + 1) / total * 100)}%`;
+          if (i % 5 === 0) await tick();
+          continue;
+        }
+      } else {
+        lastKept = imgData.data;
+        keptCount++;
+      }
+
+      const etok = S.etok ? elasticTok(imgData, fw, fh) : null;
+      if (etok) { crSum += etok.cr; crN++; }
+
+      if (!grid) grid = createGrid(Math.floor(placed / framesPerGrid) + 1, gridW, gridH, fw, fh);
+
+      // Use frame's native time for label; pass fps=null so buildLabel uses time directly
+      drawFrame(grid, slot, {
+        imageData: imgData,
+        time: frame.time,
+        isDup, etok,
+        globalIdx: placed,
+      }, { ...opts, fps: 100 /* fps unused for GIF labels, time is authoritative */ });
+
+      grid.count++;
+      if (grid.t0 === null) grid.t0 = frame.time;
+      grid.t1 = frame.time;
+      slot++; placed++;
+
+      if (slot === framesPerGrid) {
+        finalizeGrid(grid, finalOpts);
+        grid = null; slot = 0;
+      }
+
+      fill.style.width = `${Math.round((i + 1) / total * 100)}%`;
+      if (i % 5 === 0) await tick();
+    }
+
+    if (grid && grid.count > 0) finalizeGrid(grid, finalOpts);
+
+    if (S.dedup) {
+      document.getElementById('stat-kept').textContent  = keptCount;
+      document.getElementById('stat-duped').textContent = dupCount;
+      document.getElementById('stat-dedup-pct').textContent =
+        total ? Math.round(dupCount / total * 100) + '%' : '—';
+    }
+    log(`Extracted ${keptCount} frame${keptCount !== 1 ? 's' : ''}${S.dedup ? ` (${dupCount} dup${dupCount !== 1 ? 's' : ''} ${dedupMode === 'skip' ? 'skipped' : 'marked'})` : ''}`, 'ok');
+    if (S.etok && crN) log(`◈ ROSA avg CR: ${(crSum / crN).toFixed(2)}`, 'etok');
+    fill.style.width = '100%';
+    setStatus('DONE', 'live');
+    log(`Done — ${S.gridsOut} grid(s), ${S.totalFrames} frames`, 'ok');
+
+  } catch (err) {
+    log(`GIF processing failed: ${err.message}`, 'warn');
+    console.error(err);
+    setStatus('ERROR', '');
+  } finally {
+    S.busy = false;
+    btn.disabled = false;
+    setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 800);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════

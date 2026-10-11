@@ -1,15 +1,15 @@
 # Frame Grid
 
-**ConsciousNode SoftWorks** · Browser-native video contact-sheet generator with ElasticTOK frame fingerprinting.
+**ConsciousNode SoftWorks** · Browser-native video and GIF contact-sheet generator with ElasticTOK frame fingerprinting.
 
 [![Live](https://img.shields.io/badge/live-consciousnode.github.io%2Fframe--grid-00e5ff?style=flat-square&logo=github)](https://consciousnode.github.io/frame-grid)
-[![Version](https://img.shields.io/badge/version-2.0-00e5ff?style=flat-square)](https://github.com/ConsciousNode/frame-grid)
+[![Version](https://img.shields.io/badge/version-2.3-00e5ff?style=flat-square)](https://github.com/ConsciousNode/frame-grid)
 [![License](https://img.shields.io/badge/license-MIT-4a6070?style=flat-square)](LICENSE)
 [![Xinu](https://img.shields.io/badge/xinu-compliant-34d399?style=flat-square)](https://github.com/ConsciousNode)
 
 ```
-camera feed or uploaded video
-  → temporal frame sampling
+camera feed, uploaded video, or GIF
+  → temporal frame sampling / GIF frame extraction
   → ROSA ElasticTOK fingerprinting
   → labeled contact-sheet grids (PNG)
   → JSON frame manifests (FPSS-compatible)
@@ -21,19 +21,28 @@ Single HTML file. Zero dependencies. Zero uploads. Runs entirely in your browser
 
 ## What it does
 
-Frame Grid samples frames from a video at a configurable FPS, assembles them into labeled contact-sheet grids, and exports them as downloadable PNGs. With ElasticTOK enabled, each frame also gets a ROSA suffix automaton fingerprint — a structural signature that captures how repetitive or complex the frame's content is, independent of pixel-level appearance.
+Frame Grid samples frames from a video or GIF at a configurable rate, assembles them into labeled contact-sheet grids, and exports them as downloadable PNGs. With ElasticTOK enabled, each frame also gets a ROSA suffix automaton fingerprint — a structural signature that captures how repetitive or complex the frame's content is, independent of pixel-level appearance.
 
-Designed as a proof of concept for the ManosNowAware visual pipeline. Useful standalone as a fast, offline, zero-footprint video analysis tool.
+Originally designed as a proof of concept for the ManosNowAware visual pipeline. The GIF ingestion pipeline (v2.2–2.3) extends this to animated GIFs, enabling AI models to "watch" GIFs as a contact-sheet grid.
 
 ---
 
 ## Features
 
 ### Core
-- **Camera or file source** — live camera capture with recording, or drop any video file
+- **Camera, video, or GIF source** — live camera capture with recording, uploaded video files, or animated GIFs
 - **Configurable sampling** — FPS, frame dimensions, grid columns/rows, max grids
 - **Label styles** — minimal (F##), standard (F## | time), full (F## | time | fps), ROSA (F## | time | ◈CR)
 - **Download** — PNG per grid with header bar showing grid number, frame range, and timestamps
+
+### GIF Ingestion (v2.2–2.3)
+Native animated GIF support. Drop a GIF → get a contact-sheet grid of every frame, timestamped to the GIF's own timing. Designed so AI models can receive the full temporal content of an animated GIF as a single image.
+
+- **Primary decoder**: browser-native `ImageDecoder` API (Chrome 94+, Safari 17+, Firefox 113+) — handles all GIF compositing, disposal methods, interlace, and edge cases natively
+- **Fallback decoder**: pure-JS GIF89a parser with LZW decompression, interlace support, and per-frame compositing for older browsers
+- Animated preview via `<img>` element while frames are processed
+- Frame timing labels use the GIF's native cumulative timestamps
+- Dedup and ElasticTOK work identically on GIF frames as on video frames
 
 ### ElasticTOK (v2.0)
 ROSA suffix automaton fingerprint per frame. Toggle in sidebar; `◈ ELASTICTOK` chip appears in header when active.
@@ -46,7 +55,7 @@ ROSA suffix automaton fingerprint per frame. Toggle in sidebar; `◈ ELASTICTOK`
 
 ```json
 {
-  "tool": "FrameGrid v2.0",
+  "tool": "FrameGrid v2.3",
   "grid": 1,
   "frames": [
     {
@@ -77,11 +86,11 @@ Mean Absolute Difference comparison between consecutive kept frames. Configurabl
 
 **[Open Frame Grid →](https://consciousnode.github.io/frame-grid)**
 
-1. Select **Camera** or **Upload** a video file
+1. Select **Camera**, **Upload** (video), or **GIF**
 2. Set FPS, frame size, and grid dimensions in Parameters
 3. Enable **ElasticTOK** for ROSA fingerprinting (optional)
 4. Enable **Dedup** to filter near-identical frames (optional)
-5. Hit **Process Video** (or **Capture** → **Stop** for camera)
+5. Hit **Process** (or **Capture** → **Stop** for camera)
 6. Download grids as PNG. Download JSON manifests if ElasticTOK is on.
 
 Works offline. No data leaves your device.
@@ -103,48 +112,70 @@ Frame Grid's JSON manifests are designed to flow into the ConsciousNode stack:
 ## Architecture
 
 ```
-Video source (camera / file)
-  └─ resolveDuration()          — WebM Infinity fix (mobile Chrome)
-  └─ seekTo() × N               — frame-accurate temporal sampling
-  └─ proc-canvas                — single reusable extraction canvas
-  └─ frameMad()                 — MAD dedup vs previous kept frame
-  └─ elasticTok()               — ROSA fingerprint (if enabled)
+Source (camera / video file / GIF)
+  ├─ Video path
+  │    └─ resolveDuration()          — WebM Infinity fix (mobile Chrome)
+  │    └─ seekTo() × N               — frame-accurate temporal sampling
+  │    └─ proc-canvas                — single reusable extraction canvas
+  └─ GIF path
+       └─ gifDecode()                — routes to native or pure-JS
+            ├─ gifDecodeNative()     — ImageDecoder API (primary)
+            └─ gifDecodePureJS()     — GIF89a parser + LZW (fallback)
+                 └─ gifLZW()         — variable-width LZW decompressor
+  └─ frameMad()                      — MAD dedup vs previous kept frame
+  └─ elasticTok()                    — ROSA fingerprint (if enabled)
        └─ 16×16 patch → tokens
        └─ SuffixAutomaton
        └─ CR + state count
        └─ b1.58 pack → Uint8[32]
-  └─ scratch-canvas             — single reusable draw canvas
-  └─ Grid assembly              — label bars, header bar, border
-  └─ PNG download               — hdrCanvas.toDataURL()
-  └─ JSON manifest              — Blob → URL → <a download>
+  └─ scratch-canvas                  — single reusable draw canvas
+  └─ Grid assembly                   — label bars, header bar, border
+  └─ PNG download                    — hdrCanvas.toDataURL()
+  └─ JSON manifest                   — Blob → URL → <a download>
 ```
 
 ---
 
 ## Changelog
 
+### v2.3 — 2026-10-11 · Komorebi Interim
+
+- **LZW bug fixed.** `dict.length > codeMask + 1` → `dict.length > codeMask`. The code-size growth check was off by one: the decoder read 9-bit codes when the bitstream had already switched to 10-bit codes, producing garbage indices that all failed the color table bounds check and silently rendered every frame black. Root cause of all-black output in v2.2.x.
+- **`ImageDecoder` API as primary GIF decoder.** Native browser GIF decoding (Chrome 94+, Safari 17+, Firefox 113+). Handles compositing, disposal methods, interlace, and all edge cases automatically. Pure-JS decoder retained as fallback for older browsers.
+- `gifDecode()` is now async and routes to native or fallback automatically. Log reports which path was taken.
+- `index.html` updated to v2.3.
+- Version string updated throughout.
+
+### v2.2 — 2026-10-11 · Komorebi Interim
+
+- **GIF ingestion pipeline.** Animated GIFs can be loaded as a source alongside camera and video upload. Pure-JS GIF89a decoder with full LZW decompression, interlace support, and per-frame compositing respecting all three disposal methods (leave, restore-background, restore-previous).
+- GIF source button (🌀) added to source panel.
+- Animated preview via `<img>` element while frames are decoded and processed.
+- Frame timing labels use GIF's native cumulative timestamps.
+- `processSource()` router added — PROCESS button works for both video and GIF.
+- Note: v2.2.x builds produced all-black GIF grids due to the LZW bug fixed in v2.3.
+
 ### v2.1 — 2026-06-07 · Kehai Interim
 
-- **GIF export** — pure JS GIF89a encoder, zero dependencies, Xinu-compliant. Toggle in Analysis panel. After processing, a green download bar appears with the animated GIF ready to grab.
-  - LZW compression with numeric-keyed Map (fast — no string allocation per code pair)
-  - 8×8×4 uniform 256-color palette (3-bit R, 3-bit G, 2-bit B), O(1) quantization per pixel
-  - Frames sub-sampled evenly from full extraction set up to configurable max (default 60)
+- **GIF export** — pure JS GIF89a encoder, zero dependencies, Xinu-compliant. Toggle in Analysis panel.
+  - LZW compression with numeric-keyed Map
+  - 8×8×4 uniform 256-color palette, O(1) quantization per pixel
+  - Frames sub-sampled evenly up to configurable max (default 60)
   - Configurable GIF width (160–480px), frame delay (4–50 centiseconds)
   - NETSCAPE2.0 loop extension for infinite loop
-  - File size shown on download bar before saving
+- Mobile Chrome WebM blob duration=Infinity splice fix (Kehai Interim, 2026-10-11).
 
 ### v2.0 — 2026-06-07 · Kehai Interim
 
-- **Xinu compliance** — Google Fonts CDN import removed. System monospace stack: `ui-monospace, 'Cascadia Code', 'Fira Mono', 'Consolas', monospace`. Zero external calls.
+- **Xinu compliance** — Google Fonts CDN import removed. System monospace stack. Zero external calls.
 - **Viewport** — `user-scalable=no` removed. Browser zoom restored.
-- **ElasticTOK** — `SuffixAutomaton` class inline. `elasticTok()` produces ROSA CR + state count + b1.58 packed fingerprint per frame. Toggle in sidebar. ROSA label style. JSON manifest download per grid.
-- **Frame deduplication** — `frameMad()` MAD comparison vs previous kept frame. Configurable threshold. Skip or mark mode. Dedup stats panel.
-- **Single scratch canvas** — `#scratch-canvas` allocated once, reused for all frame draws. Eliminates N canvas allocations per grid assembly pass.
-- **New label style** — ROSA option showing `F## | #.#s | ◈CR` in frame label bars.
+- **ElasticTOK** — `SuffixAutomaton` class inline. ROSA CR + state count + b1.58 packed fingerprint per frame.
+- **Frame deduplication** — `frameMad()` MAD comparison. Configurable threshold. Skip or mark mode.
+- **Single scratch canvas** — eliminates N canvas allocations per grid assembly pass.
 
 ### v1.3 — Ed Interim
 
-- Mobile Chrome WebM blob duration=Infinity fix. `resolveDuration()` force-seeks to 1e10 and waits for `durationchange` event before proceeding.
+- Mobile Chrome WebM blob duration=Infinity fix. `resolveDuration()` force-seeks to 1e10 and waits for `durationchange` event.
 
 ### v1.0–1.2 — Kham / Ed Interim
 
@@ -155,12 +186,3 @@ Video source (camera / file)
 ## License
 
 MIT — ConsciousNode SoftWorks
-
----
-
-## Changelog
-
-### 2026-10-11 · Kehai Interim
-- **`frame-grid-v2.1.html` (the GIF build) now runs.** A splice had dropped the line `function toggleETok(on) {`, so the whole script failed to parse and the GIF encoder had never run in a browser. Restored.
-- **GIF frame sub-sampling fixed.** The loop skipped frame 1 every time (6 frames in gave 5 out). Verified: the output decodes as GIF89a with the correct frame count and colours.
-- Note: `index.html` is the Oct 8 build (safer text-only logging, no GIF export). The GIF build is a separate page; merging the two is a choice for later.
