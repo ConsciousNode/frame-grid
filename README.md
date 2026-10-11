@@ -17,6 +17,12 @@ camera feed, uploaded video, or GIF
 
 Single HTML file. Zero dependencies. Zero uploads. Runs entirely in your browser.
 
+**In plain words:** you're talking with your LLM, you want to show it a video or a GIF, and you can't. Frame Grid turns the video into a numbered grid of its frames, in order, in one PNG (or a batch of them). Your LLM can read the grid and "watch" the video. Record with your camera, or pick a video or GIF. Free, nothing to install, nothing leaves your machine.
+
+**Why it's built this way: the Xinu philosophy** (Unix, inverted). Look at the thing built to do one thing and do it well, and ask: *what else can it do?* In practice that means single file, offline, browser-based, zero external dependencies. The constraint is the source of innovation and invention, not a limitation.
+
+Designed by Kham, coded with Claude, at ConsciousNode SoftWorks.
+
 ---
 
 ## What it does
