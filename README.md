@@ -3,7 +3,7 @@
 **ConsciousNode SoftWorks** · Browser-native video and GIF contact-sheet generator with ElasticTOK frame fingerprinting.
 
 [![Live](https://img.shields.io/badge/live-consciousnode.github.io%2Fframe--grid-00e5ff?style=flat-square&logo=github)](https://consciousnode.github.io/frame-grid)
-[![Version](https://img.shields.io/badge/version-2.3-00e5ff?style=flat-square)](https://github.com/ConsciousNode/frame-grid)
+[![Version](https://img.shields.io/badge/version-2.4-00e5ff?style=flat-square)](https://github.com/ConsciousNode/frame-grid)
 [![License](https://img.shields.io/badge/license-MIT-4a6070?style=flat-square)](LICENSE)
 [![Xinu](https://img.shields.io/badge/xinu-compliant-34d399?style=flat-square)](https://github.com/ConsciousNode)
 
@@ -12,6 +12,7 @@ camera feed, uploaded video, or GIF
   → temporal frame sampling / GIF frame extraction
   → ROSA ElasticTOK fingerprinting
   → labeled contact-sheet grids (PNG)
+  → subtitle transcripts synced to frames (TXT, optional)
   → JSON frame manifests (FPSS-compatible)
 ```
 
@@ -40,6 +41,20 @@ Originally designed as a proof of concept for the ManosNowAware visual pipeline.
 - **Configurable sampling** — FPS, frame dimensions, grid columns/rows, max grids
 - **Label styles** — minimal (F##), standard (F## | time), full (F## | time | fps), ROSA (F## | time | ◈CR)
 - **Download** — PNG per grid with header bar showing grid number, frame range, and timestamps
+
+### Subtitles (v2.4)
+Load an `.srt` or `.vtt` file next to a video and the words come along with the pictures.
+
+- **Caption band in the grid** (toggle): each frame shows the line that was on screen at that moment, so the grid reads like the video with subtitles on.
+- **TXT transcript per grid**: every line exactly once, tagged with the frame showing when it starts:
+  ```
+  F02  0:00.5  [0:00.5–0:02.0]  Hello there.
+  F05  0:02.0  [0:02.1–0:03.9]  General Kenobi!
+  ```
+  Paste it next to the PNG. Text costs an LLM far fewer tokens than reading words out of pixels, and it's already in sync.
+- Lines that start during skipped duplicate frames carry over to the next kept frame, so nothing is lost.
+- With ElasticTOK on, the JSON manifest also gets a `caption` per frame.
+- Most video downloaders can save subtitles as `.srt`/`.vtt` alongside the video (subtitles built into a video file can't be read by the browser, so they need to be a separate file).
 
 ### GIF Ingestion (v2.2–2.3)
 Native animated GIF support. Drop a GIF → get a contact-sheet grid of every frame, timestamped to the GIF's own timing. Designed so AI models can receive the full temporal content of an animated GIF as a single image.
@@ -92,14 +107,35 @@ Mean Absolute Difference comparison between consecutive kept frames. Configurabl
 
 **[Open Frame Grid →](https://consciousnode.github.io/frame-grid)**
 
-1. Select **Camera**, **Upload** (video), or **GIF**
+1. Select **Camera**, **Upload** (video), or **GIF**. For a video, optionally add **💬 Subtitles** (.srt / .vtt)
 2. Set FPS, frame size, and grid dimensions in Parameters
 3. Enable **ElasticTOK** for ROSA fingerprinting (optional)
 4. Enable **Dedup** to filter near-identical frames (optional)
 5. Hit **Process** (or **Capture** → **Stop** for camera)
-6. Download grids as PNG. Download JSON manifests if ElasticTOK is on.
+6. Download grids as PNG, plus a TXT transcript per grid if subtitles are loaded and a JSON manifest if ElasticTOK is on.
 
 Works offline. No data leaves your device.
+
+---
+
+## Related tools
+
+Frame Grid isn't the only way to do this, and you might prefer another:
+
+- **[ffmpeg](https://ffmpeg.org)** can build a frame grid from the command line with its `tile` filter, e.g. `ffmpeg -i video.mp4 -vf "fps=2,scale=256:-1,tile=5x4" grid%02d.png`. Powerful, scriptable, needs installing.
+- **cdaf**, a similar project a Reddit commenter pointed us to.
+- You can also ask your LLM to write you a script for it.
+
+Frame Grid is for people who'd rather click: open a page, drop a video, get grids. Nothing to install, nothing uploaded.
+
+---
+
+## Roadmap
+
+- **On-screen text (OCR):** read text visible in frames (slides, signs, code) into the transcript. Candidate engine: Saccade, ConsciousNode's own zero-dependency OCR, currently stalled.
+- **Transcripts from audio:** for videos without subtitle files. Needs an offline speech model to stay Xinu-compliant (the browser's built-in speech recognition may send audio to a server), so it's a research item, not a promise.
+
+Both suggestions came from the Reddit thread. Thanks, commenters.
 
 ---
 
@@ -143,6 +179,13 @@ Source (camera / video file / GIF)
 ---
 
 ## Changelog
+
+### v2.4 — 2026-10-11 · Kehai Interim
+
+- **Subtitle import** (`.srt` / `.vtt`) for video sources: caption band drawn into each frame (toggle), TXT transcript per grid with each line tagged to its frame, `caption` field in the JSON manifest.
+- Parser handles BOM, CRLF, SRT and VTT timestamps, cue settings, NOTE/STYLE blocks, inline tags (`<i>`, `<v Speaker>`, `<c.class>`), `{\an8}` overrides and overlapping cues.
+- `tests/subtitles.js`: zero-dependency checks of the parser and the frame sync (`node tests/subtitles.js`).
+- README: Related tools and Roadmap sections.
 
 ### v2.3 — 2026-10-11 · Komorebi Interim
 

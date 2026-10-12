@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Frame Grid v2.3 — ConsciousNode SoftWorks</title>
+<title>Frame Grid v2.4 — ConsciousNode SoftWorks</title>
 <!--
-  Frame Grid v2.2
+  Frame Grid v2.4
   ConsciousNode SoftWorks
 
   Contact-sheet composite generator + ElasticTOK frame fingerprinting.
@@ -23,6 +23,12 @@
     Add: processSource() router (video vs GIF) on the PROCESS button.
     Fix: PROCESS button label updated to "PROCESS" (source-agnostic).
     Fix: version string in createGrid manifest updated to v2.2.
+
+  v2.4 — Kehai Interim (2026-10-11)
+    Add: subtitle import (.srt / .vtt) for video sources. Each frame shows the
+         line on screen at that moment as a caption band (toggle), and every
+         grid gets a TXT transcript: each line once, tagged with its frame.
+         Text is cheaper for an LLM to read than pixels, and already synced.
 
   v2.3 — Komorebi Interim
     Fix: LZW code-size growth check was off by one (> codeMask+1 → > codeMask).
@@ -191,6 +197,10 @@ video, canvas { display: block; width: 100%; max-height: 240px; object-fit: cont
 .dl-btn:hover { border-color: var(--accent); color: var(--accent); }
 .dl-btn.json { border-color: #a78bfa44; color: #a78bfa88; }
 .dl-btn.json:hover { border-color: #a78bfa; color: #a78bfa; }
+.dl-btn.txt { border-color: #fde68a44; color: #fde68a99; }
+.dl-btn.txt:hover { border-color: #fde68a; color: #fde68a; }
+.subs-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.subs-state { font-family: var(--font-mono); font-size: 9px; color: var(--tdim); overflow-wrap: anywhere; flex: 1; min-width: 0; }
 
 /* ── Empty state ── */
 .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 80px 24px; font-family: var(--font-mono); font-size: 11px; color: var(--tdim); letter-spacing: 1px; text-align: center; border: 1px dashed var(--border); border-radius: var(--r); }
@@ -221,7 +231,7 @@ input[type=file] { display: none; }
 <header>
   <div>
     <div class="logo">FRAME GRID</div>
-    <div class="logo-sub">CONSCIOUSNODE SOFTWORKS — v2.3</div>
+    <div class="logo-sub">CONSCIOUSNODE SOFTWORKS — v2.4</div>
   </div>
   <div class="header-right">
     <div class="chip etok" id="etok-chip" style="display:none">◈ ELASTICTOK</div>
@@ -248,6 +258,12 @@ input[type=file] { display: none; }
     </div>
     <input type="file" id="file-input" accept="video/*">
     <input type="file" id="gif-input" accept=".gif,image/gif">
+    <div class="subs-row">
+      <button class="dl-btn" id="btn-subs" onclick="document.getElementById('subs-input').click()">💬 SUBTITLES</button>
+      <span class="subs-state" id="subs-state">none · .srt or .vtt, for video</span>
+      <button class="dl-btn" id="btn-subs-clear" onclick="clearSubs()" style="display:none" title="Remove subtitles">✕</button>
+    </div>
+    <input type="file" id="subs-input" accept=".srt,.vtt,text/vtt">
   </div>
 
   <!-- Parameters -->
@@ -305,6 +321,14 @@ input[type=file] { display: none; }
     </div>
     <div class="hint" style="margin-bottom:14px">
       ROSA suffix automaton fingerprint per frame. Shows CR in label. Exports JSON manifest.
+    </div>
+
+    <div class="toggle-row">
+      <div class="toggle-label">CAPTIONS IN GRID <span id="caps-state">ON</span></div>
+      <label class="toggle"><input type="checkbox" id="ctrl-caps" checked onchange="document.getElementById('caps-state').textContent=this.checked?'ON':'OFF'"><span class="toggle-track"></span></label>
+    </div>
+    <div class="hint" style="margin-bottom:14px">
+      With subtitles loaded: draw each frame's on-screen line into the grid. A TXT transcript is exported either way.
     </div>
 
     <div class="toggle-row">
@@ -390,6 +414,7 @@ const S = {
   gridsOut: 0, totalFrames: 0,
   gifData: null,  // decoded GIF: { frames, width, height, duration }
   gifObjUrl: null,
+  subs: null,     // parsed subtitle cues: [{ start, end, text }], sorted by start
 };
 
 // ══════════════════════════════════════════════════════════════════
@@ -614,6 +639,113 @@ document.getElementById('gif-input').addEventListener('change', async function (
 });
 
 // ══════════════════════════════════════════════════════════════════
+//  SUBTITLES (v2.4) — .srt / .vtt → cues, synced to sampled frames
+// ══════════════════════════════════════════════════════════════════
+// "00:01:02,500" (SRT) or "01:02.500" / "00:01:02.500" (VTT) → seconds
+function parseSubTime(str) {
+  const m = /^(?:(\d+):)?(\d{1,2}):(\d{1,2})[.,](\d{1,3})$/.exec(str.trim());
+  if (!m) return NaN;
+  return (+(m[1] || 0)) * 3600 + (+m[2]) * 60 + (+m[3]) + (+m[4].padEnd(3, '0')) / 1000;
+}
+
+// Both formats are blocks separated by blank lines with a "start --> end" line;
+// everything after that line is the cue text. Headers, NOTE/STYLE/REGION blocks
+// and cue ids are skipped because they have no timing line before their text.
+function parseSubtitles(text) {
+  const cues = [];
+  const blocks = text.replace(/^﻿/, '').replace(/\r\n?/g, '\n').split(/\n[ \t]*\n/);
+  for (const block of blocks) {
+    const lines = block.split('\n');
+    const ti = lines.findIndex(l => l.includes('-->'));
+    if (ti < 0) continue;
+    const [a, rest] = lines[ti].split('-->');
+    const start = parseSubTime(a), end = parseSubTime((rest || '').trim().split(/\s+/)[0] || '');
+    if (!isFinite(start) || !isFinite(end) || end < start) continue;
+    const body = lines.slice(ti + 1).join(' ')
+      .replace(/<[^>]*>/g, '')          // <i>, <b>, <c.class>, <v Speaker>, <00:00:01.000>
+      .replace(/\{\\[^}]*\}/g, '')      // SSA-style {\an8} overrides found in some .srt files
+      .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+      .replace(/\s+/g, ' ').trim();
+    if (body) cues.push({ start, end, text: body });
+  }
+  cues.sort((x, y) => x.start - y.start || x.end - y.end);
+  return cues;
+}
+
+// Text on screen at time t (cues can overlap; join them)
+function cueTextAt(cues, t) {
+  const on = [];
+  for (const c of cues) { if (c.start > t) break; if (t < c.end) on.push(c.text); }
+  return on.join(' / ');
+}
+
+// Assigns every cue exactly once to the frame that is showing when the line
+// starts: at a frame sampled at t, emit all not-yet-emitted cues that start
+// before the next sample (t + interval). Lines that start during skipped
+// duplicate frames are carried onto the next kept frame, so nothing is lost.
+function makeCueEmitter(cues, interval) {
+  let next = 0;
+  return {
+    take(t) {
+      const out = [];
+      while (next < cues.length && cues[next].start < t + interval) out.push(cues[next++]);
+      return out;
+    },
+    remaining() { return cues.length - next; },
+  };
+}
+
+function fmtClock(t) {
+  const m = Math.floor(t / 60), s = t - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+}
+
+function clearSubs() {
+  S.subs = null;
+  document.getElementById('subs-state').textContent = 'none · .srt or .vtt, for video';
+  document.getElementById('btn-subs-clear').style.display = 'none';
+  log('Subtitles removed', 'dim');
+}
+
+document.getElementById('subs-input').addEventListener('change', async function () {
+  const file = this.files[0];
+  this.value = '';                    // allow re-loading the same file
+  if (!file) return;
+  try {
+    const cues = parseSubtitles(await file.text());
+    if (!cues.length) { log(`No subtitle cues found in ${file.name}`, 'warn'); return; }
+    S.subs = cues;
+    const span = cues[cues.length - 1].end;
+    document.getElementById('subs-state').textContent = `${file.name} · ${cues.length} lines · ${fmtClock(span)}`;
+    document.getElementById('btn-subs-clear').style.display = 'inline-block';
+    log(`Subtitles: ${cues.length} lines from ${file.name}`, 'ok');
+    if (S.source === 'gif') log('Subtitles apply to video sources, not GIFs', 'dim');
+  } catch (e) {
+    log(`Subtitle load failed: ${e.message}`, 'warn');
+  }
+});
+
+// Word-wrap for canvas text, at most maxLines lines (last one ellipsized)
+function wrapCanvasText(ctx, text, maxW, maxLines) {
+  const words = text.split(' '), lines = [];
+  let cur = '', i = 0;
+  for (; i < words.length; i++) {
+    const tryLine = cur ? cur + ' ' + words[i] : words[i];
+    if (!cur || ctx.measureText(tryLine).width <= maxW) { cur = tryLine; continue; }
+    lines.push(cur); cur = words[i];
+    if (lines.length === maxLines) break;          // out of room, words left over
+  }
+  const clipped = i < words.length;
+  if (!clipped && cur) lines.push(cur);
+  const fit = (str, force) => {                     // trim to width, add … when cut
+    if (!force && ctx.measureText(str).width <= maxW) return str;
+    while (str.length > 1 && ctx.measureText(str + '…').width > maxW) str = str.slice(0, -1);
+    return str + '…';
+  };
+  return lines.map((ln, k) => fit(ln, clipped && k === lines.length - 1));
+}
+
+// ══════════════════════════════════════════════════════════════════
 //  CAMERA
 // ══════════════════════════════════════════════════════════════════
 function stopStream() {
@@ -765,8 +897,11 @@ async function extractAndAssemble(vid, fill) {
   scratch.width = fw; scratch.height = fh;
   const sctx = scratch.getContext('2d');
 
-  const opts = { fw, fh, gc, fps, labelStyle, scratch, sctx };
+  const caps = !!S.subs && document.getElementById('ctrl-caps').checked;
+  const opts = { fw, fh, gc, fps, labelStyle, scratch, sctx, caps };
   const finalOpts = { gridW, gridH, etok: S.etok, framesPerGrid, section };
+  const emitter = S.subs ? makeCueEmitter(S.subs, interval) : null;
+  if (S.subs) log(`Subtitles: ${S.subs.length} lines${caps ? ' · captions drawn into grid' : ' · transcript only'}`, 'info');
 
   let grid = null, slot = 0, placed = 0, keptCount = 0, dupCount = 0;
   let crSum = 0, crN = 0;
@@ -798,7 +933,13 @@ async function extractAndAssemble(vid, fill) {
     if (etok) { crSum += etok.cr; crN++; }
 
     if (!grid) grid = createGrid(Math.floor(placed / framesPerGrid) + 1, gridW, gridH, fw, fh);
-    drawFrame(grid, slot, { imageData: imgData, time: t, isDup, etok, globalIdx: placed }, opts);
+    let caption = null;
+    if (emitter) {
+      caption = cueTextAt(S.subs, t);
+      for (const c of emitter.take(t))
+        grid.transcript.push(`F${String(placed + 1).padStart(2, '0')}  ${fmtClock(t)}  [${fmtClock(c.start)}–${fmtClock(c.end)}]  ${c.text}`);
+    }
+    drawFrame(grid, slot, { imageData: imgData, time: t, isDup, etok, globalIdx: placed, caption }, opts);
     grid.count++;
     if (grid.t0 === null) grid.t0 = t;
     grid.t1 = t;
@@ -813,6 +954,8 @@ async function extractAndAssemble(vid, fill) {
     if (i % 5 === 0) await tick();
   }
   if (grid && grid.count > 0) finalizeGrid(grid, finalOpts);
+  if (emitter && emitter.remaining() > 0)
+    log(`${emitter.remaining()} subtitle line(s) start after the last processed frame (past the video's end, or beyond MAX GRIDS)`, 'dim');
 
   if (S.dedup) {
     document.getElementById('stat-kept').textContent = keptCount;
@@ -834,7 +977,7 @@ function createGrid(no, gridW, gridH, fw, fh) {
   ctx.fillStyle = '#060809';
   ctx.fillRect(0, 0, gridW, gridH);
   return { no, canvas, ctx, count: 0, t0: null, t1: null,
-           manifest: { tool: 'FrameGrid v2.3', grid: no, frames: [] } };
+           manifest: { tool: 'FrameGrid v2.4', grid: no, frames: [] }, transcript: [] };
 }
 
 function drawFrame(grid, slot, frame, o) {
@@ -862,12 +1005,26 @@ function drawFrame(grid, slot, frame, o) {
   grid.ctx.fillStyle = frame.isDup ? '#f87171' : '#00e5ff';
   grid.ctx.fillText(label + dupSuffix, x + 4, y + fh - Math.round(barH * 0.22));
 
+  // Caption band (v2.4): the subtitle line on screen at this frame, at the top of the cell
+  if (o.caps && frame.caption) {
+    const capSize = Math.max(9, Math.round(fh * 0.065));
+    const lineH = Math.round(capSize * 1.25);
+    grid.ctx.font = `${capSize}px ui-sans-serif, system-ui, sans-serif`;
+    const lines = wrapCanvasText(grid.ctx, frame.caption, fw - 8, 2);
+    const bandH = lines.length * lineH + 6;
+    grid.ctx.fillStyle = 'rgba(0,0,0,0.74)';
+    grid.ctx.fillRect(x + 1, y + 1, fw - 2, bandH);
+    grid.ctx.fillStyle = '#fde68a';
+    lines.forEach((ln, k) => grid.ctx.fillText(ln, x + 4, y + 3 + capSize + k * lineH));
+  }
+
   if (frame.etok) {
     grid.manifest.frames.push({
       index: frame.globalIdx, time: +frame.time.toFixed(3),
       isDup: frame.isDup, cr: frame.etok.cr,
       stateCount: frame.etok.stateCount,
       packed: Array.from(frame.etok.packed),
+      ...(frame.caption ? { caption: frame.caption } : {}),
     });
   }
 }
@@ -935,6 +1092,19 @@ function finalizeGrid(grid, o) {
     dlJson.href = jsonUrl;
     dlJson.download = `framegrid_${String(grid.no).padStart(2, '0')}_manifest.json`;
     actions.appendChild(dlJson);
+  }
+
+  if (grid.transcript.length > 0) {
+    const head = `# Frame Grid v2.4 · subtitles for GRID ${String(grid.no).padStart(2, '0')} (frames F${String(firstFrame).padStart(2, '0')}–F${String(lastFrame).padStart(2, '0')}, ${t0}s → ${t1}s)\n` +
+                 `# Each line: the frame on screen when the line starts, that frame's time, the line's [start–end], the text.\n`;
+    const txtUrl = URL.createObjectURL(new Blob([head + grid.transcript.join('\n') + '\n'], { type: 'text/plain' }));
+    card._urls.push(txtUrl);
+    const dlTxt = document.createElement('a');
+    dlTxt.className = 'dl-btn txt';
+    dlTxt.textContent = '↓ TXT';
+    dlTxt.href = txtUrl;
+    dlTxt.download = `framegrid_${String(grid.no).padStart(2, '0')}_subtitles.txt`;
+    actions.appendChild(dlTxt);
   }
 
   hdr.appendChild(actions);
