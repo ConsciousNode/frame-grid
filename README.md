@@ -3,7 +3,7 @@
 **ConsciousNode SoftWorks** · Browser-native video and GIF contact-sheet generator with ElasticTOK frame fingerprinting.
 
 [![Live](https://img.shields.io/badge/live-consciousnode.github.io%2Fframe--grid-00e5ff?style=flat-square&logo=github)](https://consciousnode.github.io/frame-grid)
-[![Version](https://img.shields.io/badge/version-2.5.1-00e5ff?style=flat-square)](https://github.com/ConsciousNode/frame-grid)
+[![Version](https://img.shields.io/badge/version-2.6-00e5ff?style=flat-square)](https://github.com/ConsciousNode/frame-grid)
 [![License](https://img.shields.io/badge/license-MIT-4a6070?style=flat-square)](LICENSE)
 [![Xinu](https://img.shields.io/badge/xinu-compliant-34d399?style=flat-square)](https://github.com/ConsciousNode)
 
@@ -40,7 +40,7 @@ Originally designed as a proof of concept for the ManosNowAware visual pipeline.
 - **Camera, video, or GIF source** — live camera capture with recording, uploaded video files, or animated GIFs
 - **Configurable sampling** — FPS, frame dimensions, grid columns/rows, max grids (1–100, or **∞** for no limit: slide MAX GRIDS all the way right)
 - **Label styles** — minimal (F##), standard (F## | time), full (F## | time | fps), ROSA (F## | time | ◈CR)
-- **Download** — PNG per grid with header bar showing grid number, frame range, and timestamps, or **Download all** to get every grid (with its JSON and TXT) in one `.zip`
+- **Download** — PNG, JPEG or WebP per grid with header bar showing grid number, frame range, and timestamps, or **Download all** to get every grid (with its JSON and TXT) in one `.zip`
 
 ### Subtitles (v2.4)
 Load an `.srt` or `.vtt` file next to a video and the words come along with the pictures.
@@ -179,6 +179,12 @@ Source (camera / video file / GIF)
 ---
 
 ## Changelog
+
+### v2.6 — 2026-10-12 · Kehai Interim
+
+- **IMAGE FORMAT: PNG, JPEG 85% or WebP 85%.** On real film grids (four from a full-length movie), JPEG came out 4.1× smaller than PNG and WebP 9.1× smaller; on the synthetic test pattern, 2.1× and 4.1×. The format carries through to per-grid downloads and Download all.
+- Browsers that can't encode the chosen format (Safari can't write WebP) fall back to PNG, name the file `.png`, and say so in the log.
+- Tested: all three formats run, download, and give valid zips with the right extensions; subtitle tests 15/15.
 
 ### v2.5.1 — 2026-10-12 · Kehai Interim
 

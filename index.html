@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Frame Grid v2.5.1 — ConsciousNode SoftWorks</title>
+<title>Frame Grid v2.6 — ConsciousNode SoftWorks</title>
 <!--
-  Frame Grid v2.5
+  Frame Grid v2.6
   ConsciousNode SoftWorks
 
   Contact-sheet composite generator + ElasticTOK frame fingerprinting.
@@ -23,6 +23,10 @@
     Add: processSource() router (video vs GIF) on the PROCESS button.
     Fix: PROCESS button label updated to "PROCESS" (source-agnostic).
     Fix: version string in createGrid manifest updated to v2.2.
+
+  v2.6 — Kehai Interim (2026-10-12)
+    · IMAGE FORMAT: PNG, JPEG 85% or WebP 85%. For film footage JPEG/WebP are
+      several times smaller, which matters for full-length runs.
 
   v2.5.1 — Kehai Interim (2026-10-12)
     · Long runs no longer fail silently. A seek that times out gets one decoder
@@ -245,7 +249,7 @@ input[type=file] { display: none; }
 <header>
   <div>
     <div class="logo">FRAME GRID</div>
-    <div class="logo-sub">CONSCIOUSNODE SOFTWORKS — v2.5.1</div>
+    <div class="logo-sub">CONSCIOUSNODE SOFTWORKS — v2.6</div>
   </div>
   <div class="header-right">
     <div class="chip etok" id="etok-chip" style="display:none">◈ ELASTICTOK</div>
@@ -307,6 +311,14 @@ input[type=file] { display: none; }
     <div class="ctrl-row">
       <div class="ctrl-label"><span>MAX GRIDS</span><span class="ctrl-val" id="val-mg">20</span></div>
       <input type="range" id="ctrl-mg" min="1" max="101" step="1" value="20" oninput="updateParam('mg',this.value)" title="Slide to the far right for no limit (∞)">
+    </div>
+    <div class="ctrl-row">
+      <div class="ctrl-label"><span>IMAGE FORMAT</span></div>
+      <select id="ctrl-format" title="JPEG/WebP files are ~5× smaller than PNG for film footage">
+        <option value="png">PNG (lossless, largest)</option>
+        <option value="jpeg">JPEG 85% (small, any viewer)</option>
+        <option value="webp">WebP 85% (smallest)</option>
+      </select>
     </div>
     <div class="ctrl-row">
       <div class="ctrl-label"><span>LABEL STYLE</span></div>
@@ -1030,7 +1042,7 @@ function createGrid(no, gridW, gridH, fw, fh) {
   ctx.fillStyle = '#060809';
   ctx.fillRect(0, 0, gridW, gridH);
   return { no, canvas, ctx, count: 0, t0: null, t1: null,
-           manifest: { tool: 'FrameGrid v2.5', grid: no, frames: [] }, transcript: [] };
+           manifest: { tool: 'FrameGrid v2.6', grid: no, frames: [] }, transcript: [] };
 }
 
 function drawFrame(grid, slot, frame, o) {
@@ -1123,12 +1135,15 @@ function finalizeGrid(grid, o) {
   const actions = document.createElement('div');
   actions.className = 'grid-card-actions';
 
+  // v2.6: output format (PNG / JPEG / WebP)
+  const fmtSel = (document.getElementById('ctrl-format') || {}).value || 'png';
+  const FMT = { png: ['image/png', 'png', undefined], jpeg: ['image/jpeg', 'jpg', 0.85], webp: ['image/webp', 'webp', 0.85] }[fmtSel] || ['image/png', 'png', undefined];
   const dlPng = document.createElement('a');
   dlPng.className = 'dl-btn';
-  dlPng.textContent = '↓ PNG';
-  dlPng.download = `framegrid_${String(grid.no).padStart(2, '0')}_${Date.now()}.png`;
+  dlPng.textContent = '↓ ' + FMT[1].toUpperCase();
+  dlPng.download = `framegrid_${String(grid.no).padStart(2, '0')}_${Date.now()}.${FMT[1]}`;
   card._files = [];
-  const pngName = `framegrid_${String(grid.no).padStart(2, '0')}.png`;
+  let pngName = `framegrid_${String(grid.no).padStart(2, '0')}.${FMT[1]}`;
   hdrCanvas.toBlob(async blob => {
     if (!blob) { S.canvasTrouble = true; log(`Grid ${grid.no}: the browser couldn't encode the image (likely out of memory)`, 'warn'); return; }
     // v2.5.1: every grid's header differs, so two identical PNGs mean the
@@ -1140,6 +1155,14 @@ function finalizeGrid(grid, o) {
     } catch (_) {}
     const url = URL.createObjectURL(blob);
     card._urls.push(url);
+    // Browsers that can't encode the chosen format (e.g. WebP in Safari) hand back PNG: name it honestly
+    if (blob.type && blob.type !== FMT[0]) {
+      const ext = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[blob.type] || 'png';
+      pngName = pngName.replace(/\.\w+$/, '.' + ext);
+      dlPng.download = dlPng.download.replace(/\.\w+$/, '.' + ext);
+      dlPng.textContent = '↓ ' + ext.toUpperCase();
+      if (!S.fmtWarned) { S.fmtWarned = true; log(`This browser can't save ${FMT[1].toUpperCase()}; saving ${ext.toUpperCase()} instead`, 'warn'); }
+    }
     dlPng.href = url;
     card._files.unshift({ name: pngName, blob });
     // v2.5: swap the live canvas for a compressed image so long runs don't hold
@@ -1151,7 +1174,7 @@ function finalizeGrid(grid, o) {
     img.src = url;
     img.onload = () => { if (hdrCanvas.isConnected) hdrCanvas.replaceWith(img); hdrCanvas.width = hdrCanvas.height = 0; };
     updateZipButton();
-  }, 'image/png');
+  }, FMT[0], FMT[2]);
   actions.appendChild(dlPng);
 
   if (etok && grid.manifest.frames.length > 0) {
@@ -1168,7 +1191,7 @@ function finalizeGrid(grid, o) {
   }
 
   if (grid.transcript.length > 0) {
-    const head = `# Frame Grid v2.5 · subtitles for GRID ${String(grid.no).padStart(2, '0')} (frames F${String(firstFrame).padStart(2, '0')}–F${String(lastFrame).padStart(2, '0')}, ${t0}s → ${t1}s)\n` +
+    const head = `# Frame Grid v2.6 · subtitles for GRID ${String(grid.no).padStart(2, '0')} (frames F${String(firstFrame).padStart(2, '0')}–F${String(lastFrame).padStart(2, '0')}, ${t0}s → ${t1}s)\n` +
                  `# Each line: the frame on screen when the line starts, that frame's time, the line's [start–end], the text.\n`;
     const txtBlob = new Blob([head + grid.transcript.join('\n') + '\n'], { type: 'text/plain' });
     const txtUrl = URL.createObjectURL(txtBlob);
