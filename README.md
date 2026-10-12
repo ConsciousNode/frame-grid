@@ -3,7 +3,7 @@
 **ConsciousNode SoftWorks** · Browser-native video and GIF contact-sheet generator with ElasticTOK frame fingerprinting.
 
 [![Live](https://img.shields.io/badge/live-consciousnode.github.io%2Fframe--grid-00e5ff?style=flat-square&logo=github)](https://consciousnode.github.io/frame-grid)
-[![Version](https://img.shields.io/badge/version-2.4-00e5ff?style=flat-square)](https://github.com/ConsciousNode/frame-grid)
+[![Version](https://img.shields.io/badge/version-2.5-00e5ff?style=flat-square)](https://github.com/ConsciousNode/frame-grid)
 [![License](https://img.shields.io/badge/license-MIT-4a6070?style=flat-square)](LICENSE)
 [![Xinu](https://img.shields.io/badge/xinu-compliant-34d399?style=flat-square)](https://github.com/ConsciousNode)
 
@@ -38,9 +38,9 @@ Originally designed as a proof of concept for the ManosNowAware visual pipeline.
 
 ### Core
 - **Camera, video, or GIF source** — live camera capture with recording, uploaded video files, or animated GIFs
-- **Configurable sampling** — FPS, frame dimensions, grid columns/rows, max grids
+- **Configurable sampling** — FPS, frame dimensions, grid columns/rows, max grids (1–100, or **∞** for no limit: slide MAX GRIDS all the way right)
 - **Label styles** — minimal (F##), standard (F## | time), full (F## | time | fps), ROSA (F## | time | ◈CR)
-- **Download** — PNG per grid with header bar showing grid number, frame range, and timestamps
+- **Download** — PNG per grid with header bar showing grid number, frame range, and timestamps, or **Download all** to get every grid (with its JSON and TXT) in one `.zip`
 
 ### Subtitles (v2.4)
 Load an `.srt` or `.vtt` file next to a video and the words come along with the pictures.
@@ -179,6 +179,15 @@ Source (camera / video file / GIF)
 ---
 
 ## Changelog
+
+### v2.5 — 2026-10-12 · Kehai Interim
+
+Requested on Reddit: long videos without the 20-grid ceiling.
+- **MAX GRIDS goes to ∞.** The slider runs 1–100, and its far right means no limit: a video is sampled to its last frame. Default is still 20.
+- **Finished grids are held as PNG images, not canvases**, so a long run doesn't keep hundreds of full-size bitmaps in memory.
+- **Download all**: every grid's PNG, JSON manifest and TXT transcript in one `.zip`, written in plain JS (stored, since PNGs are already compressed). Still zero dependencies.
+- Runs over 60 grids log a rough size estimate. Practical limit is now your browser tab's memory; lower FPS or frame size for very long videos.
+- Tested: a 40 s clip at 3 fps on 2×2 grids gave 30 grids past the old cap; the .zip opens and verifies (CRC) with Python's `zipfile`; with MAX GRIDS at 5 the cap still holds; subtitle tests 15/15.
 
 ### v2.4 — 2026-10-11 · Kehai Interim
 

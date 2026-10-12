@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Frame Grid v2.4 — ConsciousNode SoftWorks</title>
+<title>Frame Grid v2.5 — ConsciousNode SoftWorks</title>
 <!--
-  Frame Grid v2.4
+  Frame Grid v2.5
   ConsciousNode SoftWorks
 
   Contact-sheet composite generator + ElasticTOK frame fingerprinting.
@@ -23,6 +23,12 @@
     Add: processSource() router (video vs GIF) on the PROCESS button.
     Fix: PROCESS button label updated to "PROCESS" (source-agnostic).
     Fix: version string in createGrid manifest updated to v2.2.
+
+  v2.5 — Kehai Interim (2026-10-12)
+    · MAX GRIDS slides to ∞ (no limit), by request: long videos now run to the end.
+    · Finished grids are held as PNG images, not live canvases, so long runs stay light.
+    · "Download all" packs every grid's PNG / JSON / TXT into one .zip (plain-JS writer).
+    · Large runs (> 60 grids) log a size estimate.
 
   v2.4 — Kehai Interim (2026-10-11)
     Add: subtitle import (.srt / .vtt) for video sources. Each frame shows the
@@ -231,7 +237,7 @@ input[type=file] { display: none; }
 <header>
   <div>
     <div class="logo">FRAME GRID</div>
-    <div class="logo-sub">CONSCIOUSNODE SOFTWORKS — v2.4</div>
+    <div class="logo-sub">CONSCIOUSNODE SOFTWORKS — v2.5</div>
   </div>
   <div class="header-right">
     <div class="chip etok" id="etok-chip" style="display:none">◈ ELASTICTOK</div>
@@ -292,7 +298,7 @@ input[type=file] { display: none; }
     </div>
     <div class="ctrl-row">
       <div class="ctrl-label"><span>MAX GRIDS</span><span class="ctrl-val" id="val-mg">20</span></div>
-      <input type="range" id="ctrl-mg" min="1" max="20" step="1" value="20" oninput="updateParam('mg',this.value)">
+      <input type="range" id="ctrl-mg" min="1" max="101" step="1" value="20" oninput="updateParam('mg',this.value)" title="Slide to the far right for no limit (∞)">
     </div>
     <div class="ctrl-row">
       <div class="ctrl-label"><span>LABEL STYLE</span></div>
@@ -440,9 +446,11 @@ function log(msg, type = 'info') {
 //  PARAMS + TOGGLES
 // ══════════════════════════════════════════════════════════════════
 function updateParam(key, val) {
-  S.params[key] = parseFloat(val);
+  // v2.5: MAX GRIDS at its far right (101) means no limit
+  const unlimited = key === 'mg' && parseFloat(val) > 100;
+  S.params[key] = unlimited ? Infinity : parseFloat(val);
   const out = document.getElementById(`val-${key}`);
-  if (out) out.textContent = val;
+  if (out) out.textContent = unlimited ? '∞' : val;
   updateStats();
 }
 function updateStats() {
@@ -880,6 +888,7 @@ async function extractAndAssemble(vid, fill) {
   const targetCount = Math.min(totalPossible, framesPerGrid * mg);
   if (targetCount < 1) { log('Clip is shorter than one sample interval', 'warn'); return; }
   log(`Target: ${targetCount} frames → up to ${Math.ceil(targetCount / framesPerGrid)} grid(s)`, 'info');
+  bigRunWarning(Math.ceil(targetCount / framesPerGrid), fw * gc, fh * gr);
 
   // Clear previous output and release its object URLs
   const section = document.getElementById('grids-section');
@@ -888,6 +897,7 @@ async function extractAndAssemble(vid, fill) {
     card.remove();
   });
   S.gridsOut = 0; S.totalFrames = 0;
+  if (typeof updateZipButton === 'function') updateZipButton();
 
   // Two reusable canvases, sized once
   const proc = document.getElementById('proc-canvas');
@@ -977,7 +987,7 @@ function createGrid(no, gridW, gridH, fw, fh) {
   ctx.fillStyle = '#060809';
   ctx.fillRect(0, 0, gridW, gridH);
   return { no, canvas, ctx, count: 0, t0: null, t1: null,
-           manifest: { tool: 'FrameGrid v2.4', grid: no, frames: [] }, transcript: [] };
+           manifest: { tool: 'FrameGrid v2.5', grid: no, frames: [] }, transcript: [] };
 }
 
 function drawFrame(grid, slot, frame, o) {
@@ -1074,11 +1084,23 @@ function finalizeGrid(grid, o) {
   dlPng.className = 'dl-btn';
   dlPng.textContent = '↓ PNG';
   dlPng.download = `framegrid_${String(grid.no).padStart(2, '0')}_${Date.now()}.png`;
+  card._files = [];
+  const pngName = `framegrid_${String(grid.no).padStart(2, '0')}.png`;
   hdrCanvas.toBlob(blob => {
     if (!blob) return;
     const url = URL.createObjectURL(blob);
     card._urls.push(url);
     dlPng.href = url;
+    card._files.unshift({ name: pngName, blob });
+    // v2.5: swap the live canvas for a compressed image so long runs don't hold
+    // hundreds of full-size bitmaps in memory
+    const img = new Image();
+    img.className = 'grid-canvas';
+    img.alt = `Frame grid ${grid.no}`;
+    img.decoding = 'async';
+    img.src = url;
+    img.onload = () => { if (hdrCanvas.isConnected) hdrCanvas.replaceWith(img); hdrCanvas.width = hdrCanvas.height = 0; };
+    updateZipButton();
   }, 'image/png');
   actions.appendChild(dlPng);
 
@@ -1091,19 +1113,22 @@ function finalizeGrid(grid, o) {
     dlJson.textContent = '↓ JSON';
     dlJson.href = jsonUrl;
     dlJson.download = `framegrid_${String(grid.no).padStart(2, '0')}_manifest.json`;
+    card._files.push({ name: dlJson.download, blob: jsonBlob });
     actions.appendChild(dlJson);
   }
 
   if (grid.transcript.length > 0) {
-    const head = `# Frame Grid v2.4 · subtitles for GRID ${String(grid.no).padStart(2, '0')} (frames F${String(firstFrame).padStart(2, '0')}–F${String(lastFrame).padStart(2, '0')}, ${t0}s → ${t1}s)\n` +
+    const head = `# Frame Grid v2.5 · subtitles for GRID ${String(grid.no).padStart(2, '0')} (frames F${String(firstFrame).padStart(2, '0')}–F${String(lastFrame).padStart(2, '0')}, ${t0}s → ${t1}s)\n` +
                  `# Each line: the frame on screen when the line starts, that frame's time, the line's [start–end], the text.\n`;
-    const txtUrl = URL.createObjectURL(new Blob([head + grid.transcript.join('\n') + '\n'], { type: 'text/plain' }));
+    const txtBlob = new Blob([head + grid.transcript.join('\n') + '\n'], { type: 'text/plain' });
+    const txtUrl = URL.createObjectURL(txtBlob);
     card._urls.push(txtUrl);
     const dlTxt = document.createElement('a');
     dlTxt.className = 'dl-btn txt';
     dlTxt.textContent = '↓ TXT';
     dlTxt.href = txtUrl;
     dlTxt.download = `framegrid_${String(grid.no).padStart(2, '0')}_subtitles.txt`;
+    card._files.push({ name: dlTxt.download, blob: txtBlob });
     actions.appendChild(dlTxt);
   }
 
@@ -1111,6 +1136,7 @@ function finalizeGrid(grid, o) {
   hdrCanvas.className = 'grid-canvas';
   card.append(hdr, hdrCanvas);
   section.appendChild(card);
+  updateZipButton();
 
   S.gridsOut++;
   S.totalFrames += grid.count;
@@ -1448,6 +1474,7 @@ async function processGif() {
       card.remove();
     });
     S.gridsOut = 0; S.totalFrames = 0;
+    updateZipButton();
 
     // Reusable canvases for drawing frames
     const proc    = document.getElementById('proc-canvas');
@@ -1470,6 +1497,7 @@ async function processGif() {
     let lastKept = null;
 
     const total = Math.min(frames.length, maxFrames);
+    bigRunWarning(Math.ceil(total / framesPerGrid), gridW, gridH);
     for (let i = 0; i < total; i++) {
       const frame = frames[i];
 
@@ -1606,6 +1634,88 @@ function setStatus(text, cls) {
   const chip = document.getElementById('status-chip');
   chip.textContent = text;
   chip.className = 'chip' + (cls ? ' ' + cls : '');
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  v2.5 — NO GRID LIMIT + DOWNLOAD ALL (Kehai Interim, 2026-10-12)
+//  MAX GRIDS slides to ∞. Finished grids are kept as PNG blobs, not
+//  canvases. "Download all" packs every grid's PNG / JSON / TXT into one
+//  .zip, written here in plain JS (stored, no compression: PNGs are
+//  already compressed). Zero dependencies, as ever.
+// ══════════════════════════════════════════════════════════════════
+function bigRunWarning(nGrids, w, h) {
+  if (nGrids <= 60) return;
+  const mb = Math.round(nGrids * w * h * 1.2 / 1048576);   // rough PNG size: ~1.2 bytes/pixel
+  log(`Large run: ${nGrids} grids (roughly ${mb} MB of PNGs kept in this tab). Use "Download all" at the end; lower FPS or frame size if the tab struggles.`, 'warn');
+}
+
+const CRC_TABLE = (() => { const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+  return t; })();
+function crc32(bytes) { let c = 0xFFFFFFFF; for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+
+// files: [{ name, blob }] → Blob (application/zip). Each file is read once for
+// its CRC; the output Blob references the original blobs instead of copying them.
+async function makeZip(files) {
+  const enc = new TextEncoder(), parts = [], central = [];
+  const d = new Date(), dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+        dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), size = f.blob.size;
+    const crc = crc32(new Uint8Array(await f.blob.arrayBuffer()));
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+    lh.setUint16(10, dosTime, true); lh.setUint16(12, dosDate, true); lh.setUint32(14, crc, true);
+    lh.setUint32(18, size, true); lh.setUint32(22, size, true); lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+    parts.push(lh.buffer, name, f.blob);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+    ch.setUint16(10, 0, true); ch.setUint16(12, dosTime, true); ch.setUint16(14, dosDate, true); ch.setUint32(16, crc, true);
+    ch.setUint32(20, size, true); ch.setUint32(24, size, true); ch.setUint16(28, name.length, true);
+    ch.setUint32(42, offset, true);
+    central.push(ch.buffer, name);
+    offset += 30 + name.length + size;
+  }
+  const cdSize = central.reduce((a, b) => a + (b.byteLength ?? b.length), 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+  end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end.buffer], { type: 'application/zip' });
+}
+
+function allGridFiles() {
+  const out = [];
+  document.querySelectorAll('#grids-section .grid-card').forEach(c => (c._files || []).forEach(f => out.push(f)));
+  return out;
+}
+function updateZipButton() {
+  const section = document.getElementById('grids-section');
+  let bar = document.getElementById('zip-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'zip-bar';
+    bar.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;align-items:center;margin-bottom:10px';
+    const btn = document.createElement('button');
+    btn.id = 'zip-btn'; btn.className = 'dl-btn';
+    btn.onclick = async () => {
+      const files = allGridFiles(); if (!files.length) return;
+      btn.disabled = true; const label = btn.textContent; btn.textContent = 'PACKING…';
+      try {
+        const zip = await makeZip(files);
+        const a = document.createElement('a'); a.href = URL.createObjectURL(zip);
+        a.download = `framegrid_all_${Date.now()}.zip`; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+        log(`Packed ${files.length} file(s) into one .zip (${(zip.size / 1048576).toFixed(1)} MB)`, 'ok');
+      } catch (e) { log('ZIP failed: ' + e.message, 'warn'); }
+      btn.disabled = false; btn.textContent = label;
+    };
+    bar.appendChild(btn);
+    section.insertBefore(bar, section.firstChild);
+  }
+  const n = document.querySelectorAll('#grids-section .grid-card').length;
+  document.getElementById('zip-btn').textContent = `↓ DOWNLOAD ALL (${n} grid${n === 1 ? '' : 's'}, .zip)`;
+  bar.style.display = n ? 'flex' : 'none';
 }
 </script>
 </body>
