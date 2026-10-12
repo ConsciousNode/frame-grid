@@ -3,7 +3,7 @@
 **ConsciousNode SoftWorks** · Browser-native video and GIF contact-sheet generator with ElasticTOK frame fingerprinting.
 
 [![Live](https://img.shields.io/badge/live-consciousnode.github.io%2Fframe--grid-00e5ff?style=flat-square&logo=github)](https://consciousnode.github.io/frame-grid)
-[![Version](https://img.shields.io/badge/version-2.5-00e5ff?style=flat-square)](https://github.com/ConsciousNode/frame-grid)
+[![Version](https://img.shields.io/badge/version-2.5.1-00e5ff?style=flat-square)](https://github.com/ConsciousNode/frame-grid)
 [![License](https://img.shields.io/badge/license-MIT-4a6070?style=flat-square)](LICENSE)
 [![Xinu](https://img.shields.io/badge/xinu-compliant-34d399?style=flat-square)](https://github.com/ConsciousNode)
 
@@ -179,6 +179,14 @@ Source (camera / video file / GIF)
 ---
 
 ## Changelog
+
+### v2.5.1 — 2026-10-12 · Kehai Interim
+
+Found on the first real long run (a 4h23m film, 247 grids on a phone): from 2:16:32 on, every frame came out black, and the last 103 grids were the same image saved under different names. Nothing in the log said so. The same settings on a 4-hour test video in desktop Chromium were clean (235 unique grids), so it was the device's limits; the tool's problem was failing silently.
+- **Seek timeouts get one decoder reset and a retry.** 20 failures in a row stop the run with a message naming the time.
+- **30 s of solid black right after real picture** triggers a decoder reset; if the picture doesn't come back, the log says when the black started (real black stretches still pass through).
+- **Out of canvas memory** (a grid identical to the one before, or one that can't be encoded) stops the run and says so; everything before it is kept.
+- Tested by forcing each failure: seek failure stops at the right time, a black tail warns once, a canvas fault stops after one bad grid, and a normal run logs nothing new. Subtitle tests 15/15.
 
 ### v2.5 — 2026-10-12 · Kehai Interim
 

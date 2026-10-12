@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Frame Grid v2.5 — ConsciousNode SoftWorks</title>
+<title>Frame Grid v2.5.1 — ConsciousNode SoftWorks</title>
 <!--
   Frame Grid v2.5
   ConsciousNode SoftWorks
@@ -23,6 +23,14 @@
     Add: processSource() router (video vs GIF) on the PROCESS button.
     Fix: PROCESS button label updated to "PROCESS" (source-agnostic).
     Fix: version string in createGrid manifest updated to v2.2.
+
+  v2.5.1 — Kehai Interim (2026-10-12)
+    · Long runs no longer fail silently. A seek that times out gets one decoder
+      reset and retry; 20 failures in a row stop the run with a clear message.
+    · 30 seconds of solid black right after real picture triggers a decoder reset
+      and, if that doesn't help, a warning naming the time it started.
+    · If the browser runs out of canvas memory (a grid comes out identical to the
+      one before, or can't be encoded), the run stops and says so.
 
   v2.5 — Kehai Interim (2026-10-12)
     · MAX GRIDS slides to ∞ (no limit), by request: long videos now run to the end.
@@ -237,7 +245,7 @@ input[type=file] { display: none; }
 <header>
   <div>
     <div class="logo">FRAME GRID</div>
-    <div class="logo-sub">CONSCIOUSNODE SOFTWORKS — v2.5</div>
+    <div class="logo-sub">CONSCIOUSNODE SOFTWORKS — v2.5.1</div>
   </div>
   <div class="header-right">
     <div class="chip etok" id="etok-chip" style="display:none">◈ ELASTICTOK</div>
@@ -896,7 +904,7 @@ async function extractAndAssemble(vid, fill) {
     (card._urls || []).forEach(u => URL.revokeObjectURL(u));
     card.remove();
   });
-  S.gridsOut = 0; S.totalFrames = 0;
+  S.gridsOut = 0; S.totalFrames = 0; S.lastPngSig = null;
   if (typeof updateZipButton === 'function') updateZipButton();
 
   // Two reusable canvases, sized once
@@ -917,11 +925,46 @@ async function extractAndAssemble(vid, fill) {
   let crSum = 0, crN = 0;
   let lastKept = null;   // ImageData.data of the last kept frame (getImageData returns a fresh buffer, so no copy needed)
 
+  let failStreak = 0, firstFailT = null, blackStreak = 0, blackFrom = null, blackWarned = false, hadPicture = false;
+  S.canvasTrouble = false;
   for (let i = 0; i < targetCount; i++) {
     const t = i * interval;
-    await seekTo(vid, t);
+    if (S.canvasTrouble) {
+      log(`Stopped at ${fmtClock(t)}: the browser stopped producing new grid images (out of canvas memory). Everything before this point is fine; lower FRAME size or FPS, or split the video, to go further.`, 'warn');
+      break;
+    }
+    let landed = await seekTo(vid, t);
+    if (!landed && await resetDecoder(vid)) landed = await seekTo(vid, t);
+    if (!landed) {
+      if (failStreak === 0) firstFailT = t;
+      if (++failStreak >= 20) {
+        log(`Stopped at ${fmtClock(firstFailT)}: the video stopped responding to seeks (20 in a row). Grids before this point are fine. If the video plays past here in a normal player, the browser's decoder gave out; try another browser or a smaller file.`, 'warn');
+        break;
+      }
+    } else failStreak = 0;
     pctx.drawImage(vid, 0, 0, fw, fh);
-    const imgData = pctx.getImageData(0, 0, fw, fh);
+    let imgData = pctx.getImageData(0, 0, fw, fh);
+
+    // Solid black for a long stretch right after real picture: try one decoder reset
+    const luma = frameLuma(imgData.data);
+    if (luma > 3) { hadPicture = true; blackStreak = 0; blackFrom = null; }
+    else if (hadPicture) {
+      if (blackStreak++ === 0) blackFrom = t;
+      if (blackStreak === 30) {
+        if (await resetDecoder(vid) && await seekTo(vid, t)) {
+          pctx.drawImage(vid, 0, 0, fw, fh);
+          const again = pctx.getImageData(0, 0, fw, fh);
+          if (frameLuma(again.data) > 3) {
+            imgData = again; blackStreak = 0;
+            log(`Decoder reset at ${fmtClock(t)} brought the picture back (frames from ${fmtClock(blackFrom)} were black)`, 'warn');
+          }
+        }
+        if (blackStreak && !blackWarned) {
+          blackWarned = true;
+          log(`Solid black since ${fmtClock(blackFrom)}. If the video isn't actually black here, the browser's decoder has likely stopped producing pictures.`, 'warn');
+        }
+      }
+    }
 
     let isDup = false;
     if (S.dedup && lastKept) {
@@ -1086,8 +1129,15 @@ function finalizeGrid(grid, o) {
   dlPng.download = `framegrid_${String(grid.no).padStart(2, '0')}_${Date.now()}.png`;
   card._files = [];
   const pngName = `framegrid_${String(grid.no).padStart(2, '0')}.png`;
-  hdrCanvas.toBlob(blob => {
-    if (!blob) return;
+  hdrCanvas.toBlob(async blob => {
+    if (!blob) { S.canvasTrouble = true; log(`Grid ${grid.no}: the browser couldn't encode the image (likely out of memory)`, 'warn'); return; }
+    // v2.5.1: every grid's header differs, so two identical PNGs mean the
+    // browser has stopped drawing into new canvases
+    try {
+      const sig = blob.size + ':' + Array.from(new Uint8Array(await blob.slice(Math.max(0, blob.size - 4096)).arrayBuffer())).join(',');
+      if (S.lastPngSig === sig) { S.canvasTrouble = true; log(`Grid ${grid.no} came out identical to the previous grid: the browser is out of canvas memory`, 'warn'); }
+      S.lastPngSig = sig;
+    } catch (_) {}
     const url = URL.createObjectURL(blob);
     card._urls.push(url);
     dlPng.href = url;
@@ -1614,18 +1664,35 @@ function resolveDuration(vid) {
 // is already there (no 'seeked' fires for a no-op seek), and times out
 // rather than hanging if the browser never fires 'seeked'.
 function seekTo(vid, t) {
+  // v2.5.1: resolves true if the seek landed, false if it timed out
   return new Promise(resolve => {
-    if (Math.abs(vid.currentTime - t) < 0.001 && vid.readyState >= 2) { resolve(); return; }
+    if (Math.abs(vid.currentTime - t) < 0.001 && vid.readyState >= 2) { resolve(true); return; }
     let timer = null;
-    const finish = () => {
-      vid.removeEventListener('seeked', finish);
+    const finish = ok => {
+      vid.removeEventListener('seeked', onSeeked);
       if (timer) clearTimeout(timer);
-      resolve();
+      resolve(ok);
     };
-    timer = setTimeout(finish, 2000);
-    vid.addEventListener('seeked', finish);
+    const onSeeked = () => finish(vid.readyState >= 2);
+    timer = setTimeout(() => finish(false), 2000);
+    vid.addEventListener('seeked', onSeeked);
     vid.currentTime = t;
   });
+}
+
+// v2.5.1: some browsers' video decoders (mobile especially) stop handing out
+// pictures partway through a long file. Reload the element and try again.
+function resetDecoder(vid) {
+  return new Promise(resolve => {
+    let timer = setTimeout(() => resolve(false), 8000);
+    vid.addEventListener('loadeddata', () => { clearTimeout(timer); resolve(true); }, { once: true });
+    vid.load();
+  });
+}
+function frameLuma(d) {               // mean brightness, sampled
+  let s = 0, n = 0;
+  for (let i = 0; i < d.length; i += 64) { s += d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11; n++; }
+  return n ? s / n : 0;
 }
 
 function tick() { return new Promise(r => setTimeout(r, 0)); }
